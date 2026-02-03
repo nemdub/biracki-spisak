@@ -3,3 +3,5 @@ Skripta vodi korisnika kroz proces odabira izbora, opštine/grada, biračkih mes
 Testirano na macOS.
 
 Neophodni programi: `jq`, `curl`, `sed`, `grep`.
+
+<img width="1236" height="861" alt="Screenshot 2026-02-03 at 16 49 14" src="https://github.com/user-attachments/assets/b4b88c69-31f5-4da1-ac5d-21e3d7a16d4a" />

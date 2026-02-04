@@ -84,14 +84,23 @@ function Select-FromMenu {
     Info "Koristite strelice GORE/DOLE za navigaciju, ENTER za potvrdu izbora"
     Write-Host ""
 
+    # Total lines needed for menu (top indicator + items + bottom indicator)
+    $menuHeight = $viewportSize + 2
+
+    # Ensure we have enough space by printing empty lines first
+    for ($i = 0; $i -lt $menuHeight; $i++) {
+        Write-Host ""
+    }
+
+    # Now move cursor back up to where we'll start drawing
+    $startY = [Console]::CursorTop - $menuHeight
+
     # Hide cursor
     [Console]::CursorVisible = $false
 
-    # Initial draw position
-    $startY = [Console]::CursorTop
-
     # Get console width (leave 1 char margin to prevent wrapping)
     $consoleWidth = [Console]::WindowWidth - 1
+    if ($consoleWidth -lt 40) { $consoleWidth = 40 }
 
     function Draw-Menu {
         # Adjust viewport to keep selected item visible
@@ -108,10 +117,15 @@ function Select-FromMenu {
         [Console]::SetCursorPosition(0, $startY + $lineNum)
         if ($viewportStart -gt 0) {
             $text = "  ^ jos $viewportStart iznad"
-            $text = $text.PadRight($consoleWidth).Substring(0, $consoleWidth)
+        } else {
+            $text = ""
+        }
+        $text = $text.PadRight($consoleWidth)
+        if ($text.Length -gt $consoleWidth) { $text = $text.Substring(0, $consoleWidth) }
+        if ($viewportStart -gt 0) {
             Write-Host $text -ForegroundColor Cyan -NoNewline
         } else {
-            Write-Host (" " * $consoleWidth) -NoNewline
+            Write-Host $text -NoNewline
         }
         $lineNum++
 
@@ -125,16 +139,20 @@ function Select-FromMenu {
                 $name = $Names[$itemIndex]
 
                 # Truncate name if too long
-                $maxNameLen = $consoleWidth - 10 - $id.ToString().Length
+                $prefix = "  [$id] "
+                $maxNameLen = $consoleWidth - $prefix.Length - 1
+                if ($maxNameLen -lt 10) { $maxNameLen = 10 }
                 if ($name.Length -gt $maxNameLen) {
                     $name = $name.Substring(0, $maxNameLen - 3) + "..."
                 }
 
-                $text = "  [$id] $name"
                 if ($itemIndex -eq $selected) {
                     $text = "> [$id] $name"
+                } else {
+                    $text = "  [$id] $name"
                 }
-                $text = $text.PadRight($consoleWidth).Substring(0, $consoleWidth)
+                $text = $text.PadRight($consoleWidth)
+                if ($text.Length -gt $consoleWidth) { $text = $text.Substring(0, $consoleWidth) }
 
                 if ($itemIndex -eq $selected) {
                     Write-Host $text -ForegroundColor Green -NoNewline
@@ -152,10 +170,15 @@ function Select-FromMenu {
         $remaining = $total - $viewportStart - $viewportSize
         if ($remaining -gt 0) {
             $text = "  v jos $remaining ispod"
-            $text = $text.PadRight($consoleWidth).Substring(0, $consoleWidth)
+        } else {
+            $text = ""
+        }
+        $text = $text.PadRight($consoleWidth)
+        if ($text.Length -gt $consoleWidth) { $text = $text.Substring(0, $consoleWidth) }
+        if ($remaining -gt 0) {
             Write-Host $text -ForegroundColor Cyan -NoNewline
         } else {
-            Write-Host (" " * $consoleWidth) -NoNewline
+            Write-Host $text -NoNewline
         }
         $lineNum++
 

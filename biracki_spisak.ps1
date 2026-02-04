@@ -73,9 +73,9 @@ function Select-FromMenu {
     )
 
     $total = $Ids.Count
-    $selected = 0
+    $script:menuSelected = 0
+    $script:menuViewportStart = 0
     $viewportSize = 15
-    $viewportStart = 0
 
     if ($total -lt $viewportSize) {
         $viewportSize = $total
@@ -104,25 +104,25 @@ function Select-FromMenu {
 
     function Draw-Menu {
         # Adjust viewport to keep selected item visible
-        if ($selected -lt $viewportStart) {
-            $script:viewportStart = $selected
+        if ($script:menuSelected -lt $script:menuViewportStart) {
+            $script:menuViewportStart = $script:menuSelected
         }
-        elseif ($selected -ge ($viewportStart + $viewportSize)) {
-            $script:viewportStart = $selected - $viewportSize + 1
+        elseif ($script:menuSelected -ge ($script:menuViewportStart + $viewportSize)) {
+            $script:menuViewportStart = $script:menuSelected - $viewportSize + 1
         }
 
         $lineNum = 0
 
         # Top scroll indicator
         [Console]::SetCursorPosition(0, $startY + $lineNum)
-        if ($viewportStart -gt 0) {
-            $text = "  ^ jos $viewportStart iznad"
+        if ($script:menuViewportStart -gt 0) {
+            $text = "  ^ jos $($script:menuViewportStart) iznad"
         } else {
             $text = ""
         }
         $text = $text.PadRight($consoleWidth)
         if ($text.Length -gt $consoleWidth) { $text = $text.Substring(0, $consoleWidth) }
-        if ($viewportStart -gt 0) {
+        if ($script:menuViewportStart -gt 0) {
             Write-Host $text -ForegroundColor Cyan -NoNewline
         } else {
             Write-Host $text -NoNewline
@@ -133,7 +133,7 @@ function Select-FromMenu {
         for ($i = 0; $i -lt $viewportSize; $i++) {
             [Console]::SetCursorPosition(0, $startY + $lineNum)
 
-            $itemIndex = $viewportStart + $i
+            $itemIndex = $script:menuViewportStart + $i
             if ($itemIndex -lt $total) {
                 $id = $Ids[$itemIndex]
                 $name = $Names[$itemIndex]
@@ -146,7 +146,7 @@ function Select-FromMenu {
                     $name = $name.Substring(0, $maxNameLen - 3) + "..."
                 }
 
-                if ($itemIndex -eq $selected) {
+                if ($itemIndex -eq $script:menuSelected) {
                     $text = "> [$id] $name"
                 } else {
                     $text = "  [$id] $name"
@@ -154,7 +154,7 @@ function Select-FromMenu {
                 $text = $text.PadRight($consoleWidth)
                 if ($text.Length -gt $consoleWidth) { $text = $text.Substring(0, $consoleWidth) }
 
-                if ($itemIndex -eq $selected) {
+                if ($itemIndex -eq $script:menuSelected) {
                     Write-Host $text -ForegroundColor Green -NoNewline
                 } else {
                     Write-Host $text -NoNewline
@@ -167,7 +167,7 @@ function Select-FromMenu {
 
         # Bottom scroll indicator
         [Console]::SetCursorPosition(0, $startY + $lineNum)
-        $remaining = $total - $viewportStart - $viewportSize
+        $remaining = $total - $script:menuViewportStart - $viewportSize
         if ($remaining -gt 0) {
             $text = "  v jos $remaining ispod"
         } else {
@@ -193,17 +193,21 @@ function Select-FromMenu {
 
         switch ($key.VirtualKeyCode) {
             38 { # Up arrow
-                if ($selected -gt 0) { $selected-- }
+                if ($script:menuSelected -gt 0) { $script:menuSelected-- }
                 Draw-Menu
             }
             40 { # Down arrow
-                if ($selected -lt ($total - 1)) { $selected++ }
+                if ($script:menuSelected -lt ($total - 1)) { $script:menuSelected++ }
                 Draw-Menu
             }
             13 { # Enter
                 [Console]::CursorVisible = $true
                 Write-Host ""
-                return $selected
+                $result = $script:menuSelected
+                # Clean up script-level variables
+                Remove-Variable -Name menuSelected -Scope Script -ErrorAction SilentlyContinue
+                Remove-Variable -Name menuViewportStart -Scope Script -ErrorAction SilentlyContinue
+                return $result
             }
         }
     }

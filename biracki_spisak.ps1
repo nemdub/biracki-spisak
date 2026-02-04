@@ -87,15 +87,21 @@ function Select-FromMenu {
     # Hide cursor
     [Console]::CursorVisible = $false
 
+    # Calculate total lines we'll draw (top indicator + items + bottom indicator)
+    $totalLines = $viewportSize + 2
+
     # Initial draw position
     $startY = [Console]::CursorTop
+
+    # Get console width for proper line clearing
+    $consoleWidth = [Console]::WindowWidth
+    $blankLine = " " * $consoleWidth
 
     function Draw-Menu {
         param([bool]$Redraw = $false)
 
-        if ($Redraw) {
-            [Console]::SetCursorPosition(0, $startY)
-        }
+        # Move cursor to start position
+        [Console]::SetCursorPosition(0, $startY)
 
         # Adjust viewport
         if ($selected -lt $viewportStart) {
@@ -106,42 +112,50 @@ function Select-FromMenu {
         }
 
         # Top scroll indicator
+        [Console]::Write($blankLine)
+        [Console]::SetCursorPosition(0, [Console]::CursorTop)
         if ($viewportStart -gt 0) {
-            Write-Host "  ^ jos $viewportStart iznad                                        " -ForegroundColor Cyan
+            Write-Host "  ^ jos $viewportStart iznad" -ForegroundColor Cyan
         } else {
-            Write-Host "                                                                    "
+            Write-Host ""
         }
 
         # Draw items
         for ($i = $viewportStart; $i -lt ($viewportStart + $viewportSize) -and $i -lt $total; $i++) {
+            # Clear the line first
+            [Console]::Write($blankLine)
+            [Console]::SetCursorPosition(0, [Console]::CursorTop)
+
             $id = $Ids[$i]
             $name = $Names[$i]
-            $line = "  [$id] $name"
-
-            # Pad/truncate line
-            if ($line.Length -gt 70) {
-                $line = $line.Substring(0, 67) + "..."
+            $maxNameLen = $consoleWidth - 15
+            if ($name.Length -gt $maxNameLen) {
+                $name = $name.Substring(0, $maxNameLen - 3) + "..."
             }
-            $line = $line.PadRight(70)
 
             if ($i -eq $selected) {
-                Write-Host "> $line" -ForegroundColor Green
+                Write-Host "> [$id] $name" -ForegroundColor Green
             } else {
-                Write-Host "  $line"
+                Write-Host "  [$id] $name"
             }
         }
 
-        # Pad remaining lines
-        for ($i = ($viewportStart + $viewportSize); $i -lt ($viewportStart + $viewportSize); $i++) {
-            Write-Host "                                                                    "
+        # Pad remaining lines if viewport is larger than remaining items
+        $drawnItems = [Math]::Min($viewportSize, $total - $viewportStart)
+        for ($i = $drawnItems; $i -lt $viewportSize; $i++) {
+            [Console]::Write($blankLine)
+            [Console]::SetCursorPosition(0, [Console]::CursorTop)
+            Write-Host ""
         }
 
         # Bottom scroll indicator
+        [Console]::Write($blankLine)
+        [Console]::SetCursorPosition(0, [Console]::CursorTop)
         $remaining = $total - $viewportStart - $viewportSize
         if ($remaining -gt 0) {
-            Write-Host "  v jos $remaining ispod                                            " -ForegroundColor Cyan
+            Write-Host "  v jos $remaining ispod" -ForegroundColor Cyan
         } else {
-            Write-Host "                                                                    "
+            Write-Host ""
         }
     }
 
@@ -153,11 +167,11 @@ function Select-FromMenu {
         switch ($key.VirtualKeyCode) {
             38 { # Up arrow
                 if ($selected -gt 0) { $selected-- }
-                Draw-Menu -Redraw $true
+                Draw-Menu
             }
             40 { # Down arrow
                 if ($selected -lt ($total - 1)) { $selected++ }
-                Draw-Menu -Redraw $true
+                Draw-Menu
             }
             13 { # Enter
                 [Console]::CursorVisible = $true

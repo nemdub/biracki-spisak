@@ -87,23 +87,14 @@ function Select-FromMenu {
     # Hide cursor
     [Console]::CursorVisible = $false
 
-    # Calculate total lines we'll draw (top indicator + items + bottom indicator)
-    $totalLines = $viewportSize + 2
-
     # Initial draw position
     $startY = [Console]::CursorTop
 
-    # Get console width for proper line clearing
-    $consoleWidth = [Console]::WindowWidth
-    $blankLine = " " * $consoleWidth
+    # Get console width (leave 1 char margin to prevent wrapping)
+    $consoleWidth = [Console]::WindowWidth - 1
 
     function Draw-Menu {
-        param([bool]$Redraw = $false)
-
-        # Move cursor to start position
-        [Console]::SetCursorPosition(0, $startY)
-
-        # Adjust viewport
+        # Adjust viewport to keep selected item visible
         if ($selected -lt $viewportStart) {
             $script:viewportStart = $selected
         }
@@ -111,52 +102,65 @@ function Select-FromMenu {
             $script:viewportStart = $selected - $viewportSize + 1
         }
 
+        $lineNum = 0
+
         # Top scroll indicator
-        [Console]::Write($blankLine)
-        [Console]::SetCursorPosition(0, [Console]::CursorTop)
+        [Console]::SetCursorPosition(0, $startY + $lineNum)
         if ($viewportStart -gt 0) {
-            Write-Host "  ^ jos $viewportStart iznad" -ForegroundColor Cyan
+            $text = "  ^ jos $viewportStart iznad"
+            $text = $text.PadRight($consoleWidth).Substring(0, $consoleWidth)
+            Write-Host $text -ForegroundColor Cyan -NoNewline
         } else {
-            Write-Host ""
+            Write-Host (" " * $consoleWidth) -NoNewline
         }
+        $lineNum++
 
-        # Draw items
-        for ($i = $viewportStart; $i -lt ($viewportStart + $viewportSize) -and $i -lt $total; $i++) {
-            # Clear the line first
-            [Console]::Write($blankLine)
-            [Console]::SetCursorPosition(0, [Console]::CursorTop)
+        # Draw visible items
+        for ($i = 0; $i -lt $viewportSize; $i++) {
+            [Console]::SetCursorPosition(0, $startY + $lineNum)
 
-            $id = $Ids[$i]
-            $name = $Names[$i]
-            $maxNameLen = $consoleWidth - 15
-            if ($name.Length -gt $maxNameLen) {
-                $name = $name.Substring(0, $maxNameLen - 3) + "..."
-            }
+            $itemIndex = $viewportStart + $i
+            if ($itemIndex -lt $total) {
+                $id = $Ids[$itemIndex]
+                $name = $Names[$itemIndex]
 
-            if ($i -eq $selected) {
-                Write-Host "> [$id] $name" -ForegroundColor Green
+                # Truncate name if too long
+                $maxNameLen = $consoleWidth - 10 - $id.ToString().Length
+                if ($name.Length -gt $maxNameLen) {
+                    $name = $name.Substring(0, $maxNameLen - 3) + "..."
+                }
+
+                $text = "  [$id] $name"
+                if ($itemIndex -eq $selected) {
+                    $text = "> [$id] $name"
+                }
+                $text = $text.PadRight($consoleWidth).Substring(0, $consoleWidth)
+
+                if ($itemIndex -eq $selected) {
+                    Write-Host $text -ForegroundColor Green -NoNewline
+                } else {
+                    Write-Host $text -NoNewline
+                }
             } else {
-                Write-Host "  [$id] $name"
+                Write-Host (" " * $consoleWidth) -NoNewline
             }
-        }
-
-        # Pad remaining lines if viewport is larger than remaining items
-        $drawnItems = [Math]::Min($viewportSize, $total - $viewportStart)
-        for ($i = $drawnItems; $i -lt $viewportSize; $i++) {
-            [Console]::Write($blankLine)
-            [Console]::SetCursorPosition(0, [Console]::CursorTop)
-            Write-Host ""
+            $lineNum++
         }
 
         # Bottom scroll indicator
-        [Console]::Write($blankLine)
-        [Console]::SetCursorPosition(0, [Console]::CursorTop)
+        [Console]::SetCursorPosition(0, $startY + $lineNum)
         $remaining = $total - $viewportStart - $viewportSize
         if ($remaining -gt 0) {
-            Write-Host "  v jos $remaining ispod" -ForegroundColor Cyan
+            $text = "  v jos $remaining ispod"
+            $text = $text.PadRight($consoleWidth).Substring(0, $consoleWidth)
+            Write-Host $text -ForegroundColor Cyan -NoNewline
         } else {
-            Write-Host ""
+            Write-Host (" " * $consoleWidth) -NoNewline
         }
+        $lineNum++
+
+        # Move cursor to end
+        [Console]::SetCursorPosition(0, $startY + $lineNum)
     }
 
     Draw-Menu
@@ -175,6 +179,7 @@ function Select-FromMenu {
             }
             13 { # Enter
                 [Console]::CursorVisible = $true
+                Write-Host ""
                 return $selected
             }
         }

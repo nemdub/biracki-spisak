@@ -424,7 +424,7 @@ function Init-Session {
     # 3. GET decrypted captcha value
     Info "3/4 Desifrujem captcha..."
     try {
-        $captchaDecResponse = Invoke-WebRequest -Uri "$BASE_URL/Captcha/GetCaptchaImageContent?encryptedSolution=$encodedSolution" `
+        $captchaDecResponse = Invoke-WebRequest -Uri "$BASE_URL/Captcha/GetCaptchaImageContent?encryptedSolution=$encryptedSolution" `
             -Method Get `
             -WebSession $script:webSession
     }

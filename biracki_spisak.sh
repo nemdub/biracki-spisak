@@ -275,7 +275,7 @@ choose_local_community() {
 
     # Fetch local communities from API
     local form_data="electionId=${ELECTION_ID}"
-    local url="${BASE_URL}/NumberOfVotersPreview/GetJlsForElectionId"
+    local url="${BASE_URL}/PoolingStation/GetJlsForElectionId"
     local response_file="${TMP_DIR}/communities_response_$(date +%Y%m%d_%H%M%S).json"
 
     local http_code
@@ -332,7 +332,7 @@ get_polling_stations() {
 
     # Fetch polling stations from API
     local form_data="electionId=${ELECTION_ID}&jlsId=${COMMUNITY_ID}"
-    local url="${BASE_URL}/NumberOfVotersPreview/GetPoolingStationForJlsId"
+    local url="${BASE_URL}/PoolingStation/GetPoolingStationForJlsId"
     local response_file="${TMP_DIR}/polling_stations_response_$(date +%Y%m%d_%H%M%S).json"
 
     local http_code

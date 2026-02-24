@@ -397,6 +397,126 @@ get_user_parameters() {
     export JMBG DOCUMENT_ID
 }
 
+# Step 5: Initialize session and solve captcha
+init_session() {
+
+    COOKIE_JAR="${TMP_DIR}/cookies.txt"
+    local page_file="${TMP_DIR}/main_page.html"
+
+    # 1. GET main page to obtain session cookies and __RequestVerificationToken
+    info "1/4 Učitavam početnu stranicu..."
+    local http_code
+    http_code=$(curl -s -w "%{http_code}" \
+        -c "$COOKIE_JAR" \
+        -o "$page_file" \
+        "${BASE_URL}/BiraciPoIzborimaIBirackimMestima")
+
+    if [[ "$http_code" != "200" ]]; then
+        error "Greška pri učitavanju početne stranice (HTTP: $http_code)"
+        exit 1
+    fi
+
+    # Extract __RequestVerificationToken from hidden input element
+    local token_line
+    token_line=$(grep '__RequestVerificationToken' "$page_file" | head -1)
+    REQUEST_VERIFICATION_TOKEN=$(echo "$token_line" | grep -o 'value="[^"]*"' | sed 's/value="//;s/"$//')
+
+    if [[ -z "$REQUEST_VERIFICATION_TOKEN" ]]; then
+        error "Nije moguće pronaći __RequestVerificationToken na stranici"
+        exit 1
+    fi
+    local cookies
+        cookies=$(tr -d '' < "$COOKIE_JAR")
+    success "1/4 Sesija i token učitani"
+    # info "__RequestVerificationToken: $REQUEST_VERIFICATION_TOKEN"
+    # info "Cookies: $cookies"
+
+    # 2. GET encrypted captcha solution (unix timestamp in ms used as cache-buster)
+    info "2/4 Dobavljam šifrovano captcha rešenje..."
+    local timestamp_ms
+    timestamp_ms=$(($(date +%s) * 1000))
+    local captcha_enc_file="${TMP_DIR}/captcha_encrypted.txt"
+
+    http_code=$(curl -s -w "%{http_code}" \
+        -b "$COOKIE_JAR" \
+        -c "$COOKIE_JAR" \
+        -o "$captcha_enc_file" \
+        "${BASE_URL}/Captcha/EncryptedCaptchaSolution?_=${timestamp_ms}")
+
+    if [[ "$http_code" != "200" ]]; then
+        error "Greška pri dobavljanju šifrovanog captcha rešenja (HTTP: $http_code)"
+        exit 1
+    fi
+
+    # Response is the encrypted solution string (strip surrounding quotes if present)
+    local encrypted_solution
+    encrypted_solution=$(tr -d '"' < "$captcha_enc_file")
+
+    if [[ -z "$encrypted_solution" ]]; then
+        error "Dobavljeno prazno šifrovano captcha rešenje"
+        exit 1
+    fi
+    success "2/4 Šifrovano rešenje dobavljeno"
+    info "Šifrovano captcha rešenje: $encrypted_solution"
+
+    # 3. GET decrypted captcha value from the image content endpoint
+    info "3/4 Dešifrujem captcha..."
+    local captcha_dec_file="${TMP_DIR}/captcha_decrypted.json"
+
+    http_code=$(curl -s -w "%{http_code}" \
+        -b "$COOKIE_JAR" \
+        -c "$COOKIE_JAR" \
+        -G \
+        -o "$captcha_dec_file" \
+        "${BASE_URL}/Captcha/GetCaptchaImageContent?encryptedSolution=${encrypted_solution}")
+
+    if [[ "$http_code" != "200" ]]; then
+        error "Greška pri dešifrovanju captcha (HTTP: $http_code)"
+        exit 1
+    fi
+
+    local captcha_attempt
+    captcha_attempt=$(jq -r '.responseText' "$captcha_dec_file")
+
+    if [[ -z "$captcha_attempt" || "$captcha_attempt" == "null" ]]; then
+        error "Nije moguće dešifrovati captcha rešenje"
+        exit 1
+    fi
+    success "3/4 Captcha dešifrovana"
+    info "Dešifrovano captcha rešenje: $captcha_attempt"
+
+    # 4. POST to verify captcha
+    info "4/4 Verifikujem captcha..."
+    local verify_file="${TMP_DIR}/verify_response.html"
+
+    http_code=$(curl -s -w "%{http_code}" \
+        -b "$COOKIE_JAR" \
+        -c "$COOKIE_JAR" \
+        -X POST \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -H "Origin: ${BASE_URL}" \
+        -H "Referer: ${BASE_URL}/BiraciPoIzborimaIBirackimMestima" \
+        --data-urlencode "__RequestVerificationToken=${REQUEST_VERIFICATION_TOKEN}" \
+        --data-urlencode "JMBG=${JMBG}" \
+        --data-urlencode "Document=${DOCUMENT_ID}" \
+        --data-urlencode "EncrypedSolution=${encrypted_solution}" \
+        --data-urlencode "Attempt=${captcha_attempt}" \
+        --data-urlencode "submit=Претражи" \
+        -o "$verify_file" \
+        "${BASE_URL}/Verifikacija")
+
+    if [[ "$http_code" != "302" ]]; then
+        error "Greška pri verifikaciji captcha (HTTP: $http_code)"
+        exit 1
+    fi
+
+    success "4/4 Captcha verifikovana"
+    echo ""
+    success "Sesija uspešno inicijalizovana"
+
+    export COOKIE_JAR REQUEST_VERIFICATION_TOKEN
+}
+
 # Parse HTML table and extract voter names to CSV
 # Usage: parse_voters_html input_html output_csv
 parse_voters_html() {
@@ -455,20 +575,29 @@ get_voters() {
         station_id="${polling_station_ids[$i]}"
         station_name="${polling_station_names[$i]}"
 
+        init_session
+
         printf "  [%d/%d] Učitavam BM ID %s: %s..." "$((i+1))" "$total_stations" "$station_id" "$station_name"
 
         # Fetch voters from API
-        local form_data="MupServiceResponse=DA&JMBG=${JMBG}&Document=${DOCUMENT_ID}&TipDokumenta=1&SelectedElectionId=${ELECTION_ID}&SelectedJlsId=${COMMUNITY_ID}&SelectedPollingStationsId=${station_id}"
         local response_file="${TMP_DIR}/voters_html_${station_id}.html"
         local station_csv="${OUTPUT_DIR}/biraci_${ELECTION_ID}_${COMMUNITY_ID}_${station_id}.csv"
 
-        # info "form_data: $form_data"
         local http_code
         http_code=$(curl -s -w "%{http_code}" \
+            -b "$COOKIE_JAR" \
+            -c "$COOKIE_JAR" \
             -X POST \
-            -d "${form_data}" \
+            -H "Referer: ${BASE_URL}/BiraciPoIzborimaIBirackimMestima" \
+            --data-urlencode "__RequestVerificationToken=${REQUEST_VERIFICATION_TOKEN}" \
+            --data-urlencode "MupServiceResponse=DA" \
+            --data-urlencode "JMBG=${JMBG}" \
+            --data-urlencode "Document=${DOCUMENT_ID}" \
+            --data-urlencode "TipDokumenta=0" \
+            --data-urlencode "SelectedElectionId=${ELECTION_ID}" \
+            --data-urlencode "SelectedJlsId=${COMMUNITY_ID}" \
+            --data-urlencode "SelectedPollingStationsId=${station_id}" \
             -o "$response_file" \
-            -H "Referer: https://upit.birackispisak.gov.rs/PretragaBiraca" \
             "${url}")
 
         if [[ "$http_code" != "200" ]]; then

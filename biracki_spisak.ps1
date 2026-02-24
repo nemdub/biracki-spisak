@@ -382,6 +382,7 @@ function Init-Session {
     try {
         $pageResponse = Invoke-WebRequest -Uri "$BASE_URL/BiraciPoIzborimaIBirackimMestima" `
             -Method Get `
+            -UseBasicParsing `
             -WebSession $script:webSession
     }
     catch {
@@ -405,6 +406,7 @@ function Init-Session {
     try {
         $captchaEncResponse = Invoke-WebRequest -Uri "$BASE_URL/Captcha/EncryptedCaptchaSolution?_=$timestampMs" `
             -Method Get `
+            -UseBasicParsing `
             -WebSession $script:webSession
     }
     catch {
@@ -426,6 +428,7 @@ function Init-Session {
     try {
         $captchaDecResponse = Invoke-WebRequest -Uri "$BASE_URL/Captcha/GetCaptchaImageContent?encryptedSolution=$encryptedSolution" `
             -Method Get `
+            -UseBasicParsing `
             -WebSession $script:webSession
     }
     catch {
@@ -453,6 +456,7 @@ function Init-Session {
     }
     try {
         Invoke-WebRequest -Uri "$BASE_URL/Verifikacija" `
+            -UseBasicParsing `
             -Method Post `
             -Body $verifyBody `
             -ContentType "application/x-www-form-urlencoded" `

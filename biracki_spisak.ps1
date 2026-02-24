@@ -545,7 +545,7 @@ function Get-Voters {
             $headers = @{
                 "Referer" = "$BASE_URL/BiraciPoIzborimaIBirackimMestima"
             }
-            $response = Invoke-WebRequest -Uri $url -Method Post -Body $body -ContentType "application/x-www-form-urlencoded" -Headers $headers -WebSession $script:webSession
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $url -Method Post -Body $body -ContentType "application/x-www-form-urlencoded" -Headers $headers -WebSession $script:webSession
             $response.Content | Out-File -FilePath $responseFile -Encoding UTF8
 
             # Parse HTML

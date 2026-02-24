@@ -439,6 +439,7 @@ function Init-Session {
         exit 1
     }
     Success "3/4 Captcha desifrovana"
+    Info "Desifrovano resenje: $captchaAttempt"
 
     # 4. POST to verify captcha
     Info "4/4 Verifikujem captcha..."

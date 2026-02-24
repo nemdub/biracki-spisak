@@ -424,12 +424,22 @@ function Init-Session {
     # 3. GET decrypted captcha value
     Info "3/4 Desifrujem captcha..."
     $encodedSolution = [System.Uri]::EscapeDataString($encryptedSolution)
+    $captchaDecUrl = "$BASE_URL/Captcha/GetCaptchaImageContent?encryptedSolution=$encodedSolution"
+    Write-Host "[DEBUG] encryptedSolution (raw):     $encryptedSolution" -ForegroundColor Magenta
+    Write-Host "[DEBUG] encryptedSolution (encoded):  $encodedSolution" -ForegroundColor Magenta
+    Write-Host "[DEBUG] URL:                          $captchaDecUrl" -ForegroundColor Magenta
+    Write-Host "[DEBUG] Cookies:" -ForegroundColor Magenta
+    $script:webSession.Cookies.GetAllCookies() | ForEach-Object { Write-Host "[DEBUG]   $($_.Name) = $($_.Value)" -ForegroundColor Magenta }
     try {
-        $captchaDecResponse = Invoke-WebRequest -Uri "$BASE_URL/Captcha/GetCaptchaImageContent?encryptedSolution=$encodedSolution" `
+        $captchaDecResponse = Invoke-WebRequest -Uri $captchaDecUrl `
             -Method Get `
             -WebSession $script:webSession
+        Write-Host "[DEBUG] Response status:  $($captchaDecResponse.StatusCode)" -ForegroundColor Magenta
+        Write-Host "[DEBUG] Response content: $($captchaDecResponse.Content)" -ForegroundColor Magenta
     }
     catch {
+        Write-Host "[DEBUG] Exception:        $_" -ForegroundColor Magenta
+        Write-Host "[DEBUG] Response:         $($_.Exception.Response)" -ForegroundColor Magenta
         Error-Msg "Greska pri desifrovanju captcha: $_"
         exit 1
     }

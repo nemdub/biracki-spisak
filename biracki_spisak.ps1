@@ -419,6 +419,7 @@ function Init-Session {
         exit 1
     }
     Success "2/4 Sifrovano resenje dobavljeno"
+    Info "Sifrovano resenje: $encryptedSolution"
 
     # 3. GET decrypted captcha value
     Info "3/4 Desifrujem captcha..."

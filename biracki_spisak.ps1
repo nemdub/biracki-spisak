@@ -277,7 +277,7 @@ function Choose-LocalCommunity {
     Info "Ucitavam dostupne opstine/gradove..."
     Write-Host ""
 
-    $url = "$BASE_URL/NumberOfVotersPreview/GetJlsForElectionId"
+    $url = "$BASE_URL/PoolingStation/GetJlsForElectionId"
     $body = "electionId=$ELECTION_ID"
 
     try {
@@ -321,7 +321,7 @@ function Get-PollingStations {
     Info "Ucitavam dostupna biracka mesta za odabranu opstinu/grad..."
     Write-Host ""
 
-    $url = "$BASE_URL/NumberOfVotersPreview/GetPoolingStationForJlsId"
+    $url = "$BASE_URL/PoolingStation/GetPoolingStationForJlsId"
     $body = "electionId=$ELECTION_ID&jlsId=$COMMUNITY_ID"
 
     try {
@@ -371,6 +371,101 @@ function Get-UserParameters {
     Write-Host ""
     Write-Host "Unesite broj licne karte:" -ForegroundColor White
     $script:DOCUMENT_ID = Read-Host
+}
+
+# Init session: load cookies, extract token, solve captcha, verify
+function Init-Session {
+    $script:webSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+
+    # 1. GET main page to obtain session cookies and __RequestVerificationToken
+    Info "1/4 Ucitavam pocetnu stranicu..."
+    try {
+        $pageResponse = Invoke-WebRequest -Uri "$BASE_URL/BiraciPoIzborimaIBirackimMestima" `
+            -Method Get `
+            -WebSession $script:webSession
+    }
+    catch {
+        Error-Msg "Greska pri ucitavanju pocetne stranice: $_"
+        exit 1
+    }
+
+    if ($pageResponse.Content -match 'name="__RequestVerificationToken"[^>]*value="([^"]*)"') {
+        $script:REQUEST_VERIFICATION_TOKEN = $Matches[1]
+    } elseif ($pageResponse.Content -match 'value="([^"]*)"[^>]*name="__RequestVerificationToken"') {
+        $script:REQUEST_VERIFICATION_TOKEN = $Matches[1]
+    } else {
+        Error-Msg "Nije moguce pronaci __RequestVerificationToken na stranici"
+        exit 1
+    }
+    Success "1/4 Sesija i token ucitani"
+
+    # 2. GET encrypted captcha solution (timestamp in ms used as cache-buster)
+    Info "2/4 Dobavljam sifrovano captcha resenje..."
+    $timestampMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    try {
+        $captchaEncResponse = Invoke-WebRequest -Uri "$BASE_URL/Captcha/EncryptedCaptchaSolution?_=$timestampMs" `
+            -Method Get `
+            -WebSession $script:webSession
+    }
+    catch {
+        Error-Msg "Greska pri dobavljanju sifrovanog captcha resenja: $_"
+        exit 1
+    }
+
+    # Strip surrounding quotes if response is a JSON string literal
+    $encryptedSolution = $captchaEncResponse.Content.Trim('"')
+    if (-not $encryptedSolution) {
+        Error-Msg "Dobavljeno prazno sifrovano captcha resenje"
+        exit 1
+    }
+    Success "2/4 Sifrovano resenje dobavljeno"
+
+    # 3. GET decrypted captcha value
+    Info "3/4 Desifrujem captcha..."
+    $encodedSolution = [System.Uri]::EscapeDataString($encryptedSolution)
+    try {
+        $captchaDecResponse = Invoke-WebRequest -Uri "$BASE_URL/Captcha/GetCaptchaImageContent?encryptedSolution=$encodedSolution" `
+            -Method Get `
+            -WebSession $script:webSession
+    }
+    catch {
+        Error-Msg "Greska pri desifrovanju captcha: $_"
+        exit 1
+    }
+
+    $captchaAttempt = ($captchaDecResponse.Content | ConvertFrom-Json).responseText
+    if (-not $captchaAttempt) {
+        Error-Msg "Nije moguce desifrovati captcha resenje"
+        exit 1
+    }
+    Success "3/4 Captcha desifrovana"
+
+    # 4. POST to verify captcha
+    Info "4/4 Verifikujem captcha..."
+    $verifyBody = @{
+        "__RequestVerificationToken" = $script:REQUEST_VERIFICATION_TOKEN
+        "JMBG"                       = $script:JMBG
+        "Document"                   = $script:DOCUMENT_ID
+        "EncrypedSolution"           = $encryptedSolution
+        "Attempt"                    = $captchaAttempt
+        "submit"                     = "Претражи"
+    }
+    try {
+        Invoke-WebRequest -Uri "$BASE_URL/Verifikacija" `
+            -Method Post `
+            -Body $verifyBody `
+            -ContentType "application/x-www-form-urlencoded" `
+            -Headers @{ "Origin" = $BASE_URL; "Referer" = "$BASE_URL/BiraciPoIzborimaIBirackimMestima" } `
+            -WebSession $script:webSession | Out-Null
+    }
+    catch {
+        Error-Msg "Greska pri verifikaciji captcha: $_"
+        exit 1
+    }
+
+    Success "4/4 Captcha verifikovana"
+    Write-Host ""
+    Success "Sesija uspesno inicijalizovana"
 }
 
 # Parse HTML and extract voters
@@ -424,17 +519,28 @@ function Get-Voters {
         $stationId = $pollingStationIds[$i]
         $stationName = $pollingStationNames[$i]
 
+        Init-Session
+
         Write-Host "  [$($i+1)/$totalStations] Ucitavam BM ID ${stationId}: ${stationName}..." -NoNewline
 
-        $body = "MupServiceResponse=DA&JMBG=$JMBG&Document=$DOCUMENT_ID&TipDokumenta=1&SelectedElectionId=$ELECTION_ID&SelectedJlsId=$COMMUNITY_ID&SelectedPollingStationsId=$stationId"
+        $body = @{
+            "__RequestVerificationToken" = $script:REQUEST_VERIFICATION_TOKEN
+            "MupServiceResponse"         = "DA"
+            "JMBG"                       = $JMBG
+            "Document"                   = $DOCUMENT_ID
+            "TipDokumenta"               = "1"
+            "SelectedElectionId"         = $ELECTION_ID
+            "SelectedJlsId"              = $COMMUNITY_ID
+            "SelectedPollingStationsId"  = $stationId
+        }
         $responseFile = "$TMP_DIR\voters_html_$stationId.html"
         $stationCsv = "$OUTPUT_DIR\biraci_${ELECTION_ID}_${COMMUNITY_ID}_${stationId}.csv"
 
         try {
             $headers = @{
-                "Referer" = "https://upit.birackispisak.gov.rs/PretragaBiraca"
+                "Referer" = "$BASE_URL/BiraciPoIzborimaIBirackimMestima"
             }
-            $response = Invoke-WebRequest -Uri $url -Method Post -Body $body -ContentType "application/x-www-form-urlencoded" -Headers $headers
+            $response = Invoke-WebRequest -Uri $url -Method Post -Body $body -ContentType "application/x-www-form-urlencoded" -Headers $headers -WebSession $script:webSession
             $response.Content | Out-File -FilePath $responseFile -Encoding UTF8
 
             # Parse HTML

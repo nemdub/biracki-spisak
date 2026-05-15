@@ -91,20 +91,37 @@ validate_credentials() {
 # ----------------------------------------------------------------------------
 # Session / captcha
 # ----------------------------------------------------------------------------
-# Ponavlja se isti 4-koračni postupak kao u biracki_spisak.sh:401, ali sa
-# Referer-om koji odgovara stranici PretragaBiracaPoAdresi.
+# Tok je drugačiji od /Verifikacija u biracki_spisak.sh:
+#   1. GET /                         -> postavlja inicijalni anti-forgery kolačić
+#   2. GET /BiraciPoAdresi (Ref: /)  -> rotira kolačić i vraća formu sa tokenom
+#   3. GET šifrovani captcha
+#   4. GET dešifrovani captcha
+#   5. POST /BiraciPoAdresi (action) -> 302 redirect; -L prati ka /PretragaBiracaPoAdresi
+#      koji vraća formu votersSearchForm sa konačnim tokenom za VotersOverviewByAddress.
 init_session() {
     COOKIE_JAR="${TMP_DIR}/cookies.txt"
+    rm -f "$COOKIE_JAR"
     local page_file="${TMP_DIR}/main_page.html"
-
-    # 1. GET početne stranice (kolačići + __RequestVerificationToken)
     local http_code
+
+    # 1. GET /
     http_code=$(curl -s -w "%{http_code}" \
         -c "$COOKIE_JAR" \
         -o "$page_file" \
-        "${BASE_URL}/PretragaBiracaPoAdresi")
+        "${BASE_URL}/")
     if [[ "$http_code" != "200" ]]; then
-        error "Greška pri učitavanju početne stranice (HTTP: $http_code)"
+        error "Greška pri učitavanju Home stranice (HTTP: $http_code)"
+        return 1
+    fi
+
+    # 2. GET /BiraciPoAdresi (zahteva Referer: / i kolačić iz prethodnog koraka)
+    http_code=$(curl -s -w "%{http_code}" \
+        -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
+        -H "Referer: ${BASE_URL}/" \
+        -o "$page_file" \
+        "${BASE_URL}/BiraciPoAdresi")
+    if [[ "$http_code" != "200" ]]; then
+        error "Greška pri učitavanju /BiraciPoAdresi (HTTP: $http_code)"
         return 1
     fi
 
@@ -112,11 +129,11 @@ init_session() {
     token_line=$(grep '__RequestVerificationToken' "$page_file" | head -1)
     REQUEST_VERIFICATION_TOKEN=$(echo "$token_line" | grep -o 'value="[^"]*"' | sed 's/value="//;s/"$//')
     if [[ -z "$REQUEST_VERIFICATION_TOKEN" ]]; then
-        error "Nije moguće pronaći __RequestVerificationToken na stranici"
+        error "Nije moguće pronaći __RequestVerificationToken na /BiraciPoAdresi"
         return 1
     fi
 
-    # 2. GET šifrovanog captcha rešenja
+    # 3. GET šifrovanog captcha rešenja
     local timestamp_ms
     timestamp_ms=$(($(date +%s) * 1000))
     local captcha_enc_file="${TMP_DIR}/captcha_encrypted.txt"
@@ -136,7 +153,7 @@ init_session() {
         return 1
     fi
 
-    # 3. GET dešifrovanog captcha
+    # 4. GET dešifrovanog captcha
     local captcha_dec_file="${TMP_DIR}/captcha_decrypted.json"
     http_code=$(curl -s -w "%{http_code}" \
         -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
@@ -155,25 +172,43 @@ init_session() {
         return 1
     fi
 
-    # 4. POST verifikacije
-    local verify_file="${TMP_DIR}/verify_response.html"
+    # 5. POST verifikacije na /BiraciPoAdresi (action forme) — očekuje se 302
+    #    redirect na /PretragaBiracaPoAdresi.
     http_code=$(curl -s -w "%{http_code}" \
         -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
         -X POST \
         -H "Content-Type: application/x-www-form-urlencoded" \
         -H "Origin: ${BASE_URL}" \
-        -H "Referer: ${BASE_URL}/PretragaBiracaPoAdresi" \
+        -H "Referer: ${BASE_URL}/BiraciPoAdresi" \
         --data-urlencode "__RequestVerificationToken=${REQUEST_VERIFICATION_TOKEN}" \
         --data-urlencode "JMBG=${JMBG}" \
         --data-urlencode "Document=${DOCUMENT_ID}" \
         --data-urlencode "EncrypedSolution=${encrypted_solution}" \
         --data-urlencode "Attempt=${captcha_attempt}" \
         --data-urlencode "submit=Претражи" \
-        -o "$verify_file" \
-        "${BASE_URL}/Verifikacija")
-    # Verifikacija ume da vrati 302 (redirect) ili 200 (success page). Oba su OK.
+        -o /dev/null \
+        "${BASE_URL}/BiraciPoAdresi")
     if [[ "$http_code" != "302" && "$http_code" != "200" ]]; then
         error "Greška pri verifikaciji captcha (HTTP: $http_code)"
+        return 1
+    fi
+
+    # 6. GET /PretragaBiracaPoAdresi — strana sa votersSearchForm i konačnim
+    #    tokenom potrebnim za VotersOverviewByAddress.
+    http_code=$(curl -s -w "%{http_code}" \
+        -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
+        -H "Referer: ${BASE_URL}/BiraciPoAdresi" \
+        -o "$page_file" \
+        "${BASE_URL}/PretragaBiracaPoAdresi")
+    if [[ "$http_code" != "200" ]]; then
+        error "Greška pri učitavanju /PretragaBiracaPoAdresi (HTTP: $http_code)"
+        return 1
+    fi
+
+    token_line=$(grep '__RequestVerificationToken' "$page_file" | head -1)
+    REQUEST_VERIFICATION_TOKEN=$(echo "$token_line" | grep -o 'value="[^"]*"' | sed 's/value="//;s/"$//')
+    if [[ -z "$REQUEST_VERIFICATION_TOKEN" ]]; then
+        error "Nije moguće pronaći token na /PretragaBiracaPoAdresi (verifikacija možda nije prošla)"
         return 1
     fi
 

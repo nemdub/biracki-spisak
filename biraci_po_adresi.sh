@@ -36,7 +36,9 @@ BASE_URL="https://upit.birackispisak.gov.rs"
 LOCALITIES_FILE="./data/localities.json"
 OUTPUT_DIR="./output"
 TMP_DIR="./output/tmp"
-CACHE_DIR="./output/cache"
+# Tree keš živi van output/ jer su mesta/ulice/kućni brojevi referentni
+# podaci koji se ne menjaju često — opstaju i kad korisnik obriše output/.
+CACHE_DIR="./data/cache"
 STATE_DIR="./output/state"
 COMBINED_CSV="${OUTPUT_DIR}/biraci_po_adresi_svi.csv"
 CSV_HEADER='"LokalitetId","Opstina","Mesto","Ulica","KucniBroj","Sprat","Stan","BiracaPrebivaliste","BiracaBoraviste"'
@@ -287,7 +289,7 @@ build_tree() {
             # Live progres na istoj liniji (\r + clear-to-EOL).
             printf "\r\033[K  └─ mesto %s (%s) — %d/%d ulica, %d kućnih brojeva (%s)" \
                 "$mesto_name" "$mesto_id" "$ulica_count" "$ulica_total" "$kucni_total" "$ulica_name"
-            sleep 0.05
+            sleep 0.01
         done < <(echo "$ulice_json" | jq -r '.[] | "\(.Value)\t\(.Text)"')
 
         tree=$(echo "$tree" | jq -c \
@@ -462,7 +464,7 @@ scrape_locality() {
         else
             echo -e "${RED}FAIL${NC}"
         fi
-        sleep 0.5
+        sleep 0.02
     done < <(jq -r '.mesta[] as $m | $m.ulice[] as $u | $u.kucniBrojevi[] | "\($m.id)\t\($u.id)\t\(.Value)"' "$tree_file")
 
     success "Lokalitet ${locality_id}: obrađeno ${processed} novih adresa (ukupno gotovih: $(wc -l < "$state_file" | tr -d ' '))"

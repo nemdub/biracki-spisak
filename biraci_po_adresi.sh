@@ -247,18 +247,23 @@ build_tree() {
     local mesto_id mesto_name
     while IFS=$'\t' read -r mesto_id mesto_name; do
         [[ -z "$mesto_id" ]] && continue
-        printf "  └─ mesto %s (%s)" "$mesto_name" "$mesto_id"
 
         local ulice_json
         ulice_json=$(fetch_dropdown "DajSveUliceZaMestoId" "mestoId" "$mesto_id")
         if ! echo "$ulice_json" | jq -e 'type == "array"' > /dev/null 2>&1; then
-            echo " [neispravan odgovor za ulice, preskačem]"
+            echo "  └─ mesto ${mesto_name} (${mesto_id}) [neispravan odgovor za ulice, preskačem]"
             continue
         fi
+
+        local ulica_total
+        ulica_total=$(echo "$ulice_json" | jq 'length')
 
         local ulice_with_kucni='[]'
         local ulica_count=0
         local kucni_total=0
+
+        # Inicijalni status (pre prve iteracije)
+        printf "  └─ mesto %s (%s) — 0/%d ulica" "$mesto_name" "$mesto_id" "$ulica_total"
 
         local ulica_id ulica_name
         while IFS=$'\t' read -r ulica_id ulica_name; do
@@ -278,6 +283,11 @@ build_tree() {
                 --arg name "$ulica_name" \
                 --argjson kucni "$kucni_json" \
                 '. + [{"id": $id, "name": $name, "kucniBrojevi": $kucni}]')
+
+            # Live progres na istoj liniji (\r + clear-to-EOL).
+            printf "\r\033[K  └─ mesto %s (%s) — %d/%d ulica, %d kućnih brojeva (%s)" \
+                "$mesto_name" "$mesto_id" "$ulica_count" "$ulica_total" "$kucni_total" "$ulica_name"
+            sleep 0.05
         done < <(echo "$ulice_json" | jq -r '.[] | "\(.Value)\t\(.Text)"')
 
         tree=$(echo "$tree" | jq -c \
@@ -286,7 +296,9 @@ build_tree() {
             --argjson ulice "$ulice_with_kucni" \
             '.mesta += [{"id": $id, "name": $name, "ulice": $ulice}]')
 
-        echo " — ${ulica_count} ulica, ${kucni_total} kućnih brojeva"
+        # Finalni red (sa novim redom) — sažeti rezultat za mesto.
+        printf "\r\033[K  └─ mesto %s (%s) — %d ulica, %d kućnih brojeva\n" \
+            "$mesto_name" "$mesto_id" "$ulica_count" "$kucni_total"
     done < <(echo "$mesta_json" | jq -r '.[] | "\(.Value)\t\(.Text)"')
 
     echo "$tree" > "$tree_file"

@@ -105,7 +105,7 @@ init_session() {
     local http_code
 
     # 1. GET /
-    http_code=$(curl -s -w "%{http_code}" \
+    http_code=$(curl -s --max-time 30 -w "%{http_code}" \
         -c "$COOKIE_JAR" \
         -o "$page_file" \
         "${BASE_URL}/")
@@ -115,7 +115,7 @@ init_session() {
     fi
 
     # 2. GET /BiraciPoAdresi (zahteva Referer: / i kolačić iz prethodnog koraka)
-    http_code=$(curl -s -w "%{http_code}" \
+    http_code=$(curl -s --max-time 30 -w "%{http_code}" \
         -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
         -H "Referer: ${BASE_URL}/" \
         -o "$page_file" \
@@ -137,7 +137,7 @@ init_session() {
     local timestamp_ms
     timestamp_ms=$(($(date +%s) * 1000))
     local captcha_enc_file="${TMP_DIR}/captcha_encrypted.txt"
-    http_code=$(curl -s -w "%{http_code}" \
+    http_code=$(curl -s --max-time 30 -w "%{http_code}" \
         -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
         -o "$captcha_enc_file" \
         "${BASE_URL}/Captcha/EncryptedCaptchaSolution?_=${timestamp_ms}")
@@ -155,7 +155,7 @@ init_session() {
 
     # 4. GET dešifrovanog captcha
     local captcha_dec_file="${TMP_DIR}/captcha_decrypted.json"
-    http_code=$(curl -s -w "%{http_code}" \
+    http_code=$(curl -s --max-time 30 -w "%{http_code}" \
         -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
         -G \
         -o "$captcha_dec_file" \
@@ -174,7 +174,7 @@ init_session() {
 
     # 5. POST verifikacije na /BiraciPoAdresi (action forme) — očekuje se 302
     #    redirect na /PretragaBiracaPoAdresi.
-    http_code=$(curl -s -w "%{http_code}" \
+    http_code=$(curl -s --max-time 30 -w "%{http_code}" \
         -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
         -X POST \
         -H "Content-Type: application/x-www-form-urlencoded" \
@@ -195,7 +195,7 @@ init_session() {
 
     # 6. GET /PretragaBiracaPoAdresi — strana sa votersSearchForm i konačnim
     #    tokenom potrebnim za VotersOverviewByAddress.
-    http_code=$(curl -s -w "%{http_code}" \
+    http_code=$(curl -s --max-time 30 -w "%{http_code}" \
         -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
         -H "Referer: ${BASE_URL}/BiraciPoAdresi" \
         -o "$page_file" \
@@ -223,7 +223,7 @@ fetch_dropdown() {
     local endpoint=$1
     local param_name=$2
     local param_value=$3
-    curl -s -X POST \
+    curl -s --max-time 30 -X POST \
         -H "Referer: ${BASE_URL}/PretragaBiracaPoAdresi" \
         --data-urlencode "${param_name}=${param_value}" \
         "${BASE_URL}/NumberOfVotersByAddressPreview/${endpoint}"
@@ -350,7 +350,7 @@ fetch_and_write_address() {
 
     local response_file="${TMP_DIR}/voters_address.html"
     local http_code
-    http_code=$(curl -s -w "%{http_code}" \
+    http_code=$(curl -s --max-time 30 -w "%{http_code}" \
         -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
         -X POST \
         -H "Origin: ${BASE_URL}" \

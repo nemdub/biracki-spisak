@@ -90,9 +90,9 @@ DEBUG_LOG=""
 # kad PARALLEL>1 (vidi main); u sekvencijalnom modu prefix se ne pojavljuje pa
 # log izgleda identično kao pre.
 _log_prefix() { [[ -n "$WORKER_ID" ]] && printf '[W%s] ' "$WORKER_ID"; }
-info()    { echo -e "${CYAN}ℹ${NC} $(_log_prefix)$1"; }
-success() { echo -e "${GREEN}✓${NC} $(_log_prefix)$1"; }
-warn()    { echo -e "${YELLOW}⚠${NC} $(_log_prefix)$1"; }
+info()    { echo -e "${CYAN}ℹ${NC} $(_log_prefix)$1" 1>&2; }
+success() { echo -e "${GREEN}✓${NC} $(_log_prefix)$1" 1>&2; }
+warn()    { echo -e "${YELLOW}⚠${NC} $(_log_prefix)$1" 1>&2; }
 error()   { echo -e "${RED}✗${NC} $(_log_prefix)$1" 1>&2; }
 
 # Sa DEBUG=1, svaki curl poziv ide kroz wrapper koji upisuje sažet zapis u
@@ -542,7 +542,7 @@ build_tree() {
         fi
 
         local ulica_total
-        ulica_total=$(echo "$ulice_json" | jq 'length')
+        ulica_total=$(echo "$ulice_json" | jq 'length') || return 1
 
         local ulice_with_kucni='[]'
         local ulica_count=0
@@ -563,8 +563,21 @@ build_tree() {
                 [[ -z "$WORKER_ID" ]] && echo
                 return 1
             fi
+            # Diagnostički guard: build_tree se zove kao `build_tree ... || return 1`
+            # u load_or_build_tree, što gasi `set -e` unutar funkcije. Ako ovde
+            # `kucni_json` ne parsira kao JSON array, --argjson dole crkne i tiha
+            # kaskada (svaki sledeći jq dobija praznu stdin) na kraju ostavi
+            # prazan tree_<id>.json. Dampujemo offending bajtove i prekidamo tree
+            # build za ovaj lokalitet — zadržava postojeći keš netaknut.
+            if ! printf '%s' "$kucni_json" | jq -e 'type == "array"' > /dev/null 2>&1; then
+                local _bad_dump="${OUTPUT_DIR}/bad_kucni_${locality_id}_${mesto_id}_${ulica_id}.bin"
+                printf '%s' "$kucni_json" > "$_bad_dump"
+                error "kucni_json nije validan JSON array za ulicu '${ulica_name}' (${ulica_id}); dump: ${_bad_dump} ($(wc -c < "$_bad_dump" | tr -d ' ') bytes)"
+                return 1
+            fi
+
             local kucni_count
-            kucni_count=$(echo "$kucni_json" | jq 'length')
+            kucni_count=$(echo "$kucni_json" | jq 'length') || return 1
             kucni_total=$((kucni_total + kucni_count))
             ulica_count=$((ulica_count + 1))
 
@@ -572,7 +585,7 @@ build_tree() {
                 --arg id "$ulica_id" \
                 --arg name "$ulica_name" \
                 --argjson kucni "$kucni_json" \
-                '. + [{"id": $id, "name": $name, "kucniBrojevi": $kucni}]')
+                '. + [{"id": $id, "name": $name, "kucniBrojevi": $kucni}]') || return 1
 
             # Live progres na istoj liniji (\r + clear-to-EOL). Samo u
             # sekvencijalnom modu — u paralelnom bi se workeri međusobno gazili.
@@ -587,7 +600,7 @@ build_tree() {
             --arg id "$mesto_id" \
             --arg name "$mesto_name" \
             --argjson ulice "$ulice_with_kucni" \
-            '.mesta += [{"id": $id, "name": $name, "ulice": $ulice}]')
+            '.mesta += [{"id": $id, "name": $name, "ulice": $ulice}]') || return 1
 
         # Finalni red (sa novim redom) — sažeti rezultat za mesto. U paralelnom
         # modu prefiksujemo [W#] da se vidi koji worker piše (i izbacujemo \r
@@ -600,6 +613,15 @@ build_tree() {
                 "$mesto_name" "$mesto_id" "$ulica_count" "$kucni_total"
         fi
     done < <(echo "$mesta_json" | jq -r '.[] | "\(.Value)\t\(.Text)"')
+
+    # Sanity check pred upis: build_tree se zove kao `build_tree ... || return 1`
+    # pa `set -e` ovde ne važi; ako je iz nekog razloga $tree ostao prazan ili
+    # nije validan JSON object, BEZ ovoga bismo atomski rename-ovali "" preko
+    # potencijalno dobrog postojećeg keša.
+    if ! printf '%s' "$tree" | jq -e 'type == "object"' > /dev/null 2>&1; then
+        error "tree za lokalitet ${locality_id} nije validan JSON pred upis; ne pišem keš"
+        return 1
+    fi
 
     # Atomicno upisivanje: piši u .tmp pa rename. Ako tree-build pukne ili je
     # Ctrl-C usred zapisa, postojeći cache fajl ostaje netaknut. Bez ovoga je

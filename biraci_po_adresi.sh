@@ -23,10 +23,20 @@
 #                     ROTATE_IP_CMD="nordvpn d && nordvpn c"
 #                     ROTATE_IP_CMD="expressvpn disconnect && expressvpn connect smart"
 #                   Bez ove varijable, skripta samo čeka 60-180s na 429.
+#   PARALLEL      - opciono, broj paralelnih workera (default 1). Svaki worker
+#                   obrađuje po jedan lokalitet iz deljenog reda, sa sopstvenim
+#                   cookie jar-om i tmp direktorijumom (output/tmp/worker_<pid>).
+#                   NAPOMENA: PARALLEL>1 sa ROTATE_IP_CMD je problematično — workeri
+#                   se međusobno ometaju oko jedne IP rotacije. Sa jednim IP-om i
+#                   PARALLEL>1 očekuj brže 429-ove jer dele rate-limit budžet.
 #
 # Opcionalni pozicioni argumenti:
-#   ./biraci_po_adresi.sh [lokalitet_id ...]
-#   ako su navedeni, obrađuju se samo ti lokaliteti
+#   ./biraci_po_adresi.sh [--trees-only] [lokalitet_id ...]
+#   ako su navedeni lokalitet_id-jevi, obrađuju se samo ti lokaliteti.
+#   --trees-only: gradi/osvežava samo cache stabla (data/cache/tree_*.json) i
+#                 preskače skupljanje birača po adresama. Komponuje se sa
+#                 REFRESH_TREE=1 (force rebuild), PARALLEL=N (paralelna gradnja
+#                 stabala) i listom lokaliteta.
 # ============================================================================
 
 set -e
@@ -54,19 +64,36 @@ CORE_HEADERS=(
 )
 LOCALITIES_FILE="./data/localities.json"
 OUTPUT_DIR="./output"
-TMP_DIR="./output/tmp"
+# TMP_DIR_BASE je root za sve per-worker tmp direktorijume. Svaki worker
+# (uključujući i jedini worker u PARALLEL=1 modu) koristi sopstveni
+# poddirektorijum "${TMP_DIR_BASE}/worker_<parent-pid>_<worker-id>" da bi
+# cookie jar i scratch fajlovi bili izolovani — i između workera u jednoj
+# instanci, i između više istovremeno pokrenutih instanci na istom računaru.
+TMP_DIR_BASE="./output/tmp"
+QUEUE_FILE="${TMP_DIR_BASE}/queue.txt"
+# Lock je direktorijum (mkdir je atomično na svim FS-ovima i radi i na macOS-u
+# gde nema flock-a podrazumevano). pop_locality mkdir-uje pre čitanja, rmdir-uje
+# posle.
+QUEUE_LOCK_DIR="${TMP_DIR_BASE}/queue.lock.d"
 # Tree keš živi van output/ jer su mesta/ulice/kućni brojevi referentni
 # podaci koji se ne menjaju često — opstaju i kad korisnik obriše output/.
 CACHE_DIR="./data/cache"
 STATE_DIR="./output/state"
 COMBINED_CSV="${OUTPUT_DIR}/biraci_po_adresi_svi.csv"
 CSV_HEADER='"LokalitetId","Opstina","Mesto","Ulica","KucniBroj","Sprat","Stan","BiracaPrebivaliste","BiracaBoraviste"'
-DEBUG_LOG="${OUTPUT_DIR}/debug.log"
+# DEBUG_LOG se postavlja per-worker u worker_init (output/debug_worker_<pid>.log)
+# da paralelni >> appendi ne bi razbijali jedan zajednički log.
+DEBUG_LOG=""
 
-info()    { echo -e "${CYAN}ℹ${NC} $1"; }
-success() { echo -e "${GREEN}✓${NC} $1"; }
-warn()    { echo -e "${YELLOW}⚠${NC} $1"; }
-error()   { echo -e "${RED}✗${NC} $1" 1>&2; }
+# U paralelnom modu, svaka log linija dobija [W#] prefiks da bi se output od
+# različitih workera lako razdvajao. WORKER_ID se postavlja u worker_init samo
+# kad PARALLEL>1 (vidi main); u sekvencijalnom modu prefix se ne pojavljuje pa
+# log izgleda identično kao pre.
+_log_prefix() { [[ -n "$WORKER_ID" ]] && printf '[W%s] ' "$WORKER_ID"; }
+info()    { echo -e "${CYAN}ℹ${NC} $(_log_prefix)$1"; }
+success() { echo -e "${GREEN}✓${NC} $(_log_prefix)$1"; }
+warn()    { echo -e "${YELLOW}⚠${NC} $(_log_prefix)$1"; }
+error()   { echo -e "${RED}✗${NC} $(_log_prefix)$1" 1>&2; }
 
 # Sa DEBUG=1, svaki curl poziv ide kroz wrapper koji upisuje sažet zapis u
 # $DEBUG_LOG: metod + URL, -H headere, parsirane kolačiće iz $COOKIE_JAR-a,
@@ -166,7 +193,7 @@ check_dependencies() {
 }
 
 setup_directories() {
-    mkdir -p "$OUTPUT_DIR" "$TMP_DIR" "$CACHE_DIR" "$STATE_DIR"
+    mkdir -p "$OUTPUT_DIR" "$TMP_DIR_BASE" "$CACHE_DIR" "$STATE_DIR"
 }
 
 validate_credentials() {
@@ -418,7 +445,78 @@ fetch_dropdown() {
             echo "    [debug] ${endpoint} ${param_name}=${param_value} -> posle refresh: HTTP ${http_code}, body ${body_len}B" 1>&2
         fi
     fi
+
     cat "$body_file"
+
+    # Uspeh iff HTTP 200 i body je JSON array. Sve drugo (non-200, ne-JSON,
+    # redirect JSON, error HTML, prazno telo posle refresh-a) je greška —
+    # callerima vraćamo non-zero da bi se razlikovala validna sesija od tihog
+    # otkaza koji je ranije završavao kao "ulica sa 0 kućnih brojeva" u kešu.
+    if [[ "$http_code" != "200" ]] || ! jq -e 'type == "array"' < "$body_file" > /dev/null 2>&1; then
+        if [[ "$DEBUG" == "1" ]]; then
+            local snippet
+            snippet=$(tr '\n' ' ' < "$body_file" | cut -c1-200)
+            echo "    [debug] fetch_dropdown ${endpoint} ${param_name}=${param_value} fail: HTTP=${http_code}, body=${body_len}B, snippet=${snippet}" 1>&2
+        fi
+        return 1
+    fi
+    return 0
+}
+
+# Wrapper oko fetch_dropdown-a za tree-build. fetch_dropdown sam radi jedan
+# jeftin refresh_token retry; ovde dodajemo do 3 puna pokušaja sa
+# init_session-om (i opcionalnom IP rotacijom) između — analogno leaf-fetch
+# retry petlji u fetch_and_write_address. Empty array se tretira kao greška:
+# u domenu, ulica nikad nema 0 kućnih brojeva, mesto nikad 0 ulica, opština
+# nikad 0 mesta. Ranije je tihi 0-rezultat trajno korumpirao keš.
+#
+# $4 (context) je samo za log poruke ("lokalitet 271", "mesto X (12)", itd.).
+fetch_dropdown_retry() {
+    local endpoint=$1
+    local param_name=$2
+    local param_value=$3
+    local context=$4
+
+    local body count
+    local attempt=0
+    local -r max_attempts=3
+    while (( attempt < max_attempts )); do
+        attempt=$((attempt + 1))
+        if body=$(fetch_dropdown "$endpoint" "$param_name" "$param_value"); then
+            count=$(echo "$body" | jq 'length')
+            if (( count > 0 )); then
+                printf '%s' "$body"
+                return 0
+            fi
+            warn "${context}: ${endpoint} vratio prazan array (pokušaj #${attempt}/${max_attempts})"
+        else
+            warn "${context}: ${endpoint} neispravan odgovor (pokušaj #${attempt}/${max_attempts})"
+        fi
+
+        if (( attempt >= max_attempts )); then
+            break
+        fi
+
+        # Između pokušaja: IP rotacija ako je dostupna, inače linearni backoff.
+        # Onda pun init_session (kolačić + form-token + captcha).
+        if [[ -n "$ROTATE_IP_CMD" ]]; then
+            warn "${context}: rotiram IP pre pokušaja #$((attempt + 1))"
+            if ! eval "$ROTATE_IP_CMD"; then
+                warn "ROTATE_IP_CMD vratio grešku (nastavljam svejedno)"
+            fi
+            sleep 3
+        else
+            local wait_s=$((2 * attempt))
+            warn "${context}: čekam ${wait_s}s pre pokušaja #$((attempt + 1))"
+            sleep $wait_s
+        fi
+        if ! init_session; then
+            warn "${context}: init_session pao u retry-u"
+        fi
+    done
+
+    error "${context}: ${endpoint} neuspeo posle ${max_attempts} pokušaja"
+    return 1
 }
 
 build_tree() {
@@ -428,9 +526,7 @@ build_tree() {
     info "Gradim stablo (mesta/ulice/kućni brojevi) za lokalitet ${locality_id}..."
 
     local mesta_json
-    mesta_json=$(fetch_dropdown "DajSvaMestaZaOpstinaId" "opstinaId" "$locality_id")
-    if ! echo "$mesta_json" | jq -e 'type == "array"' > /dev/null 2>&1; then
-        error "Lokalitet ${locality_id}: neispravan odgovor za listu mesta"
+    if ! mesta_json=$(fetch_dropdown_retry "DajSvaMestaZaOpstinaId" "opstinaId" "$locality_id" "lokalitet ${locality_id}"); then
         return 1
     fi
 
@@ -441,10 +537,8 @@ build_tree() {
         [[ -z "$mesto_id" ]] && continue
 
         local ulice_json
-        ulice_json=$(fetch_dropdown "DajSveUliceZaMestoId" "mestoId" "$mesto_id")
-        if ! echo "$ulice_json" | jq -e 'type == "array"' > /dev/null 2>&1; then
-            echo "  └─ mesto ${mesto_name} (${mesto_id}) [neispravan odgovor za ulice, preskačem]"
-            continue
+        if ! ulice_json=$(fetch_dropdown_retry "DajSveUliceZaMestoId" "mestoId" "$mesto_id" "lokalitet ${locality_id}, mesto '${mesto_name}' (${mesto_id})"); then
+            return 1
         fi
 
         local ulica_total
@@ -454,16 +548,20 @@ build_tree() {
         local ulica_count=0
         local kucni_total=0
 
-        # Inicijalni status (pre prve iteracije)
-        printf "  └─ mesto %s (%s) — 0/%d ulica" "$mesto_name" "$mesto_id" "$ulica_total"
+        # Inicijalni status (pre prve iteracije). U paralelnom modu (WORKER_ID
+        # postavljen) preskačemo \r-bazirane live update-ove jer bi se lomili
+        # između workera; samo finalni red po mestu se ispisuje (vidi ispod).
+        if [[ -z "$WORKER_ID" ]]; then
+            printf "  └─ mesto %s (%s) — 0/%d ulica" "$mesto_name" "$mesto_id" "$ulica_total"
+        fi
 
         local ulica_id ulica_name
         while IFS=$'\t' read -r ulica_id ulica_name; do
             [[ -z "$ulica_id" ]] && continue
             local kucni_json
-            kucni_json=$(fetch_dropdown "DajSveKucneBrojeveZaUlicaId" "ulicaId" "$ulica_id")
-            if ! echo "$kucni_json" | jq -e 'type == "array"' > /dev/null 2>&1; then
-                kucni_json='[]'
+            if ! kucni_json=$(fetch_dropdown_retry "DajSveKucneBrojeveZaUlicaId" "ulicaId" "$ulica_id" "lokalitet ${locality_id}, mesto '${mesto_name}' (${mesto_id}), ulica '${ulica_name}' (${ulica_id})"); then
+                [[ -z "$WORKER_ID" ]] && echo
+                return 1
             fi
             local kucni_count
             kucni_count=$(echo "$kucni_json" | jq 'length')
@@ -476,10 +574,13 @@ build_tree() {
                 --argjson kucni "$kucni_json" \
                 '. + [{"id": $id, "name": $name, "kucniBrojevi": $kucni}]')
 
-            # Live progres na istoj liniji (\r + clear-to-EOL).
-            printf "\r\033[K  └─ mesto %s (%s) — %d/%d ulica, %d kućnih brojeva (%s)" \
-                "$mesto_name" "$mesto_id" "$ulica_count" "$ulica_total" "$kucni_total" "$ulica_name"
-            sleep 0.01
+            # Live progres na istoj liniji (\r + clear-to-EOL). Samo u
+            # sekvencijalnom modu — u paralelnom bi se workeri međusobno gazili.
+            if [[ -z "$WORKER_ID" ]]; then
+                printf "\r\033[K  └─ mesto %s (%s) — %d/%d ulica, %d kućnih brojeva (%s)" \
+                    "$mesto_name" "$mesto_id" "$ulica_count" "$ulica_total" "$kucni_total" "$ulica_name"
+                sleep 0.01
+            fi
         done < <(echo "$ulice_json" | jq -r '.[] | "\(.Value)\t\(.Text)"')
 
         tree=$(echo "$tree" | jq -c \
@@ -488,19 +589,58 @@ build_tree() {
             --argjson ulice "$ulice_with_kucni" \
             '.mesta += [{"id": $id, "name": $name, "ulice": $ulice}]')
 
-        # Finalni red (sa novim redom) — sažeti rezultat za mesto.
-        printf "\r\033[K  └─ mesto %s (%s) — %d ulica, %d kućnih brojeva\n" \
-            "$mesto_name" "$mesto_id" "$ulica_count" "$kucni_total"
+        # Finalni red (sa novim redom) — sažeti rezultat za mesto. U paralelnom
+        # modu prefiksujemo [W#] da se vidi koji worker piše (i izbacujemo \r
+        # jer u worker modu nikada ništa nije ispisano na ovoj liniji pre).
+        if [[ -n "$WORKER_ID" ]]; then
+            printf "  [W%s] └─ mesto %s (%s) — %d ulica, %d kućnih brojeva\n" \
+                "$WORKER_ID" "$mesto_name" "$mesto_id" "$ulica_count" "$kucni_total"
+        else
+            printf "\r\033[K  └─ mesto %s (%s) — %d ulica, %d kućnih brojeva\n" \
+                "$mesto_name" "$mesto_id" "$ulica_count" "$kucni_total"
+        fi
     done < <(echo "$mesta_json" | jq -r '.[] | "\(.Value)\t\(.Text)"')
 
-    echo "$tree" > "$tree_file"
+    # Atomicno upisivanje: piši u .tmp pa rename. Ako tree-build pukne ili je
+    # Ctrl-C usred zapisa, postojeći cache fajl ostaje netaknut. Bez ovoga je
+    # bilo moguće dobiti polu-flush-ovan JSON na disku.
+    local tmp_tree="${tree_file}.tmp.$$"
+    echo "$tree" > "$tmp_tree"
+    mv "$tmp_tree" "$tree_file"
     success "Stablo sačuvano: ${tree_file}"
 }
 
 load_or_build_tree() {
     local locality_id=$1
     local tree_file="${CACHE_DIR}/tree_${locality_id}.json"
-    if [[ "$REFRESH_TREE" == "1" || ! -f "$tree_file" ]]; then
+
+    # Validacija keša pre upotrebe. Stari build_tree je tihi 0-rezultat (greška
+    # servera, istek tokena, redirect JSON) konvertovao u prazan array i taj
+    # pad-cache je posle ostajao zauvek. Auto-heal: ako keš sadrži praznu ulicu
+    # ili prazan mesto, ignorišemo ga i gradimo iznova — kao da je REFRESH_TREE=1.
+    local need_build=0
+    local rebuild_reason=""
+    if [[ "$REFRESH_TREE" == "1" ]]; then
+        need_build=1
+        rebuild_reason="REFRESH_TREE=1"
+    elif [[ ! -f "$tree_file" ]]; then
+        need_build=1
+        rebuild_reason="keš ne postoji"
+    elif ! jq empty "$tree_file" 2>/dev/null; then
+        need_build=1
+        rebuild_reason="keš nije validan JSON"
+    else
+        local empty_streets empty_mesta
+        empty_streets=$(jq '[.mesta[].ulice[] | select(.kucniBrojevi | length == 0)] | length' "$tree_file" 2>/dev/null)
+        empty_mesta=$(jq '[.mesta[] | select(.ulice | length == 0)] | length' "$tree_file" 2>/dev/null)
+        if [[ "${empty_streets:-0}" -gt 0 ]] || [[ "${empty_mesta:-0}" -gt 0 ]]; then
+            need_build=1
+            rebuild_reason="korumpiran keš (${empty_streets:-0} praznih ulica, ${empty_mesta:-0} praznih mesta)"
+        fi
+    fi
+
+    if [[ "$need_build" == "1" ]]; then
+        warn "Tree-build za lokalitet ${locality_id}: ${rebuild_reason}"
         # Dropdown endpointi (DajSva...) zahtevaju captcha-verifikovanu sesiju,
         # pa init samo kad zaista gradimo. Leaf-loop više ne deli ovu sesiju —
         # svaki leaf ide kroz svoj pun init_session u fetch_and_write_address.
@@ -805,6 +945,11 @@ scrape_locality() {
         return 1
     fi
 
+    if [[ "$TREES_ONLY" == "1" ]]; then
+        success "Lokalitet ${locality_id}: stablo spremno (trees-only mod)"
+        return 0
+    fi
+
     if [[ ! -f "$csv_file" ]]; then
         echo "$CSV_HEADER" > "$csv_file"
     fi
@@ -832,12 +977,25 @@ scrape_locality() {
             continue
         fi
 
-        printf "  [%s] [%d/%d] %s ... " "$(date +%H:%M:%S)" "$current" "$total_leaves" "$marker"
-        if fetch_and_write_address "$locality_id" "$mesto_id" "$ulica_id" "$kucni_id" "$csv_file" "$state_file"; then
-            echo -e "${GREEN}OK${NC}"
-            processed=$((processed + 1))
+        # Sekvencijalni mod: printf bez \n + odvojeni echo na istoj liniji.
+        # Paralelni mod: skupimo sve u jedan echo da različiti workeri ne bi
+        # mešali "head ... " i "OK"/"FAIL" delove iste linije.
+        if [[ -z "$WORKER_ID" ]]; then
+            printf "  [%s] [%d/%d] %s ... " "$(date +%H:%M:%S)" "$current" "$total_leaves" "$marker"
+            if fetch_and_write_address "$locality_id" "$mesto_id" "$ulica_id" "$kucni_id" "$csv_file" "$state_file"; then
+                echo -e "${GREEN}OK${NC}"
+                processed=$((processed + 1))
+            else
+                echo -e "${RED}FAIL${NC}"
+            fi
         else
-            echo -e "${RED}FAIL${NC}"
+            local _ts="$(date +%H:%M:%S)"
+            if fetch_and_write_address "$locality_id" "$mesto_id" "$ulica_id" "$kucni_id" "$csv_file" "$state_file"; then
+                echo -e "  [W${WORKER_ID}] [${_ts}] [${current}/${total_leaves}] [${locality_id}] ${marker} ... ${GREEN}OK${NC}"
+                processed=$((processed + 1))
+            else
+                echo -e "  [W${WORKER_ID}] [${_ts}] [${current}/${total_leaves}] [${locality_id}] ${marker} ... ${RED}FAIL${NC}"
+            fi
         fi
         # Leaf endpoint je per-IP rate-limited (~5 zahteva po nepoznatom prozoru).
         # Sa ROTATE_IP_CMD: burst-uj brzo, reaguj na 429 rotacijom (default 0s).
@@ -868,6 +1026,83 @@ rebuild_combined_csv() {
 }
 
 # ----------------------------------------------------------------------------
+# Worker pool (PARALLEL)
+# ----------------------------------------------------------------------------
+# Svaki worker (uključujući i jedinog u PARALLEL=1 modu) ide kroz worker_init
+# pa worker_loop. worker_init izoluje TMP_DIR (cookie jar i scratch fajlovi
+# tako ne kolaju ni između paralelnih workera, ni između više istovremeno
+# pokrenutih instanci skripte). worker_loop atomično vadi po jedan lokalitet
+# iz $QUEUE_FILE-a (zaštićen mkdir-bazovanim lock-om u $QUEUE_LOCK_DIR) i
+# poziva postojeću scrape_locality. Kad red postane prazan, worker se završava.
+worker_init() {
+    # Ključ izolacije = parent PID + WORKER_ID. Razlozi:
+    #   - macOS-ov default bash je 3.2; nema BASHPID, a `$$` u subshell-u uvek
+    #     vraća PID roditeljskog shella. Svi `cmd &` subshell-ovi tako dele isti
+    #     `$$`, pa "per-PID" putanje ne razlikuju workere.
+    #   - WORKER_ID je 1..N u paralelnom modu, prazan/0 u sekvencijalnom.
+    #   - Parent PID razlikuje više istovremenih instanci skripte (svaka ima
+    #     svoj PID), pa dve shell-a mogu da rade PARALLEL=N istovremeno bez
+    #     kolizije nad worker_<PID>_<W> putanjama.
+    local key="${$}_${WORKER_ID:-0}"
+    TMP_DIR="${TMP_DIR_BASE}/worker_${key}"
+    DEBUG_LOG="${OUTPUT_DIR}/debug_worker_${key}.log"
+    mkdir -p "$TMP_DIR"
+    # NAMERNO ne postavljamo EXIT trap ovde:
+    #   - U PARALLEL=1 modu worker_init se zove u glavnom procesu, pa bi EXIT
+    #     trap pregazio main-ov koji čisti queue/lock i sve worker_${$}_* dirove.
+    #   - U PARALLEL>1 modu bash 3.2 ionako ne aktivira EXIT u backgrounded
+    #     subshell-ovima, pa nema benefita od trap-a tamo.
+    # Cleanup ide kroz: worker_loop eksplicitno rm-ra "$TMP_DIR" na kraju
+    # (happy path) + main EXIT trap glob-čisti "${TMP_DIR_BASE}/worker_${$}"_*
+    # (sve ostalo: SIGINT, set -e, kraj subshell-a, normalan kraj main-a).
+}
+
+# Atomično skida prvi red iz $QUEUE_FILE-a i ispisuje ga na stdout. Ako je red
+# prazan, ispisuje praznu liniju (callsite tretira kao kraj).
+#
+# Lock je mkdir-bazovan jer flock(1) nije instaliran na macOS-u podrazumevano.
+# mkdir je atomično na svim popularnim FS-ovima — ako uspe, mi smo vlasnici;
+# ako ne uspe, neko drugi drži. Spinujemo na 100ms inkrementima do 60s; ako
+# lock i posle 60s stoji, pretpostavljamo zombi-vlasnika i forsirano otimamo.
+pop_locality() {
+    local line=""
+    local attempts=0
+    local -r max_attempts=600   # 600 * 0.1s = 60s
+    while ! mkdir "$QUEUE_LOCK_DIR" 2>/dev/null; do
+        attempts=$((attempts + 1))
+        if (( attempts >= max_attempts )); then
+            warn "pop_locality: lock zaglavljen 60s, forsiram"
+            rm -rf "$QUEUE_LOCK_DIR"
+            mkdir "$QUEUE_LOCK_DIR" 2>/dev/null || true
+            break
+        fi
+        sleep 0.1
+    done
+    if [[ -s "$QUEUE_FILE" ]]; then
+        line=$(head -n 1 "$QUEUE_FILE")
+        tail -n +2 "$QUEUE_FILE" > "${QUEUE_FILE}.tmp"
+        mv "${QUEUE_FILE}.tmp" "$QUEUE_FILE"
+    fi
+    rmdir "$QUEUE_LOCK_DIR" 2>/dev/null || true
+    printf '%s\n' "$line"
+}
+
+worker_loop() {
+    worker_init
+    local line id name
+    while :; do
+        line=$(pop_locality)
+        [[ -z "$line" ]] && break
+        IFS=$'\t' read -r id name <<< "$line"
+        [[ -z "$id" ]] && continue
+        scrape_locality "$id" "$name" || true
+    done
+    # Eksplicitno čišćenje za happy path (vidi worker_init komentar o EXIT
+    # trap-u u bash 3.2 background subshell-ovima).
+    rm -rf "$TMP_DIR"
+}
+
+# ----------------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------------
 main() {
@@ -881,8 +1116,19 @@ main() {
         exit 1
     fi
 
-    # Filter argumenata - opciono ograničavanje na navedene lokalitete
-    local -a filter_ids=("$@")
+    # Filter argumenata - opciono ograničavanje na navedene lokalitete.
+    # --trees-only se izdvaja u TREES_ONLY globalku (čita ga scrape_locality
+    # u istom procesu za PARALLEL=1, ili nasleđuje preko env-a u backgrounded
+    # subshell-ovima za PARALLEL>1). Sve ostale pozicione vrednosti su locality
+    # ID filteri kao i pre.
+    local -a filter_ids=()
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --trees-only) TREES_ONLY=1 ;;
+            *)            filter_ids+=("$arg") ;;
+        esac
+    done
 
     # Učitaj sve lokalitete iz JSON-a
     local -a locality_ids=()
@@ -912,14 +1158,64 @@ main() {
         total=$MAX_LOCALITIES
     fi
 
-    info "Obrađujem ${total} lokaliteta"
+    # Resolve PARALLEL i napuni red. Workeri vade lokalitete iz $QUEUE_FILE-a
+    # (FIFO, jedan po jedan, sa flock-om) — tako se posao prirodno load-balansuje
+    # između workera (worker zaglavljen na velikom gradu ne blokira ostale).
+    local parallel=${PARALLEL:-1}
+    if ! [[ "$parallel" =~ ^[0-9]+$ ]] || [[ "$parallel" -lt 1 ]]; then
+        warn "PARALLEL='$parallel' nije validan, koristim 1"
+        parallel=1
+    fi
+    if [[ "$parallel" -gt "$total" ]]; then
+        info "PARALLEL=$parallel > broj lokaliteta ($total), spuštam na $total"
+        parallel=$total
+    fi
 
+    info "Obrađujem ${total} lokaliteta sa ${parallel} worker(a)"
+
+    : > "$QUEUE_FILE"
+    rm -rf "$QUEUE_LOCK_DIR"
     local i
     for ((i=0; i<total; i++)); do
-        scrape_locality "${locality_ids[$i]}" "${locality_names[$i]}" || true
+        printf '%s\t%s\n' "${locality_ids[$i]}" "${locality_names[$i]}" >> "$QUEUE_FILE"
     done
 
-    rebuild_combined_csv
+    # EXIT trap pokriva i happy path i pad: kill svih job-ova (no-op kad su već
+    # gotovi), glob-čišćenje worker dirova ove instance (bash 3.2 ne aktivira
+    # EXIT u backgrounded subshell-u, pa se oslanjamo na main da pokupi sve),
+    # i brisanje queue fajla i lock dira. ${$} u trap-u (single quote) se širi
+    # u trenutku okidanja — `$$` je stabilan tokom celog života main procesa.
+    # `|| true` posle svakog koraka jer je set -e aktivan: bez njega, prva
+    # komanda koja vrati non-zero (npr. kill kad nema job-ova) bi prekinula trap
+    # pre nego što stignemo do brisanja queue fajla.
+    trap '
+        kill $(jobs -p) 2>/dev/null || true
+        rm -rf "${TMP_DIR_BASE}/worker_${$}"_* 2>/dev/null || true
+        rm -f "$QUEUE_FILE" 2>/dev/null || true
+        rm -rf "$QUEUE_LOCK_DIR" 2>/dev/null || true
+    ' EXIT
+
+    if [[ "$parallel" -eq 1 ]]; then
+        # Sekvencijalni mod: WORKER_ID nije postavljen pa logovi ostaju bez
+        # [W#] prefiksa (identično ponašanje kao pre uvođenja paralelizacije).
+        worker_loop
+    else
+        # Paralelni mod: forkujemo N background workera. SIGINT/SIGTERM trap
+        # im šalje signal pre nego što main propagira exit (EXIT trap onda
+        # čisti queue + dirove). Workeri imaju nasledni SIGINT/SIGTERM trap
+        # iz globalnog set-a na dnu fajla — exit-uju 130 i (na bash 3.2) ne
+        # čiste se sami; glob u main EXIT trap-u to pokriva.
+        trap 'kill $(jobs -p) 2>/dev/null || true; echo ""; warn "Prekinuto. Pokreni ponovo da nastaviš sa rezimea."; exit 130' SIGINT SIGTERM
+        local w
+        for ((w=1; w<=parallel; w++)); do
+            WORKER_ID=$w worker_loop &
+        done
+        wait
+    fi
+
+    if [[ "$TREES_ONLY" != "1" ]]; then
+        rebuild_combined_csv
+    fi
 
     echo ""
     success "Završeno."

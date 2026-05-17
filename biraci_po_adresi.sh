@@ -356,26 +356,28 @@ _init_session_once() {
 }
 
 # Public wrapper: vrti _init_session_once sa IP rotacijom kad bilo koji korak
-# vrati 429. Bez ROTATE_IP_CMD-a — backoff (koji obično ne pomaže kod per-IP
-# limita, ali ne pravi štetu). Sve druge greške (parsing, non-429 HTTP) se
-# propagiraju kao pre.
+# vrati 429, ili sa back-off-om kad curl vrati 000 (DNS/TLS/connect timeout —
+# tranzijentna mrežna greška, ne per-IP limit, pa rotacija ne pomaže). Sve
+# druge greške (parsing, drugi non-200 HTTP kodovi) se propagiraju kao pre.
 init_session() {
+    local -r max_attempts=5
     local attempt=0
-    while (( attempt <= 3 )); do
+    while (( attempt <= max_attempts )); do
         # Hard-stop: ako je korisnik pritisnuo Ctrl-C, ne ulazi u novi pokušaj.
         [[ -f "$STOP_FLAG_FILE" ]] && return 1
         if _init_session_once; then
             return 0
         fi
-        if [[ "$INIT_SESSION_HTTP_CODE" != "429" ]]; then
-            return 1
-        fi
+        case "$INIT_SESSION_HTTP_CODE" in
+            429|000) ;;
+            *) return 1 ;;
+        esac
         attempt=$((attempt + 1))
-        if (( attempt > 3 )); then
-            error "init_session: 429 i posle 3 IP rotacija, odustajem"
+        if (( attempt > max_attempts )); then
+            error "init_session: ${INIT_SESSION_HTTP_CODE} i posle ${max_attempts} pokušaja, odustajem"
             return 1
         fi
-        if [[ -n "$ROTATE_IP_CMD" ]]; then
+        if [[ "$INIT_SESSION_HTTP_CODE" == "429" && -n "$ROTATE_IP_CMD" ]]; then
             warn "init_session 429, rotiram IP (pokušaj #${attempt})"
             if ! eval "$ROTATE_IP_CMD"; then
                 warn "ROTATE_IP_CMD vratio grešku (nastavljam svejedno)"
@@ -383,7 +385,7 @@ init_session() {
             sleep 3
         else
             local wait_s=$((2 * attempt))
-            warn "init_session 429, čekam ${wait_s}s (pokušaj #${attempt})"
+            warn "init_session ${INIT_SESSION_HTTP_CODE}, čekam ${wait_s}s (pokušaj #${attempt})"
             sleep $wait_s
         fi
     done
@@ -746,6 +748,8 @@ fetch_and_write_address() {
         return 0
     fi
 
+    local -r BACKOFF_BASE=2
+
     # Pun init_session (GET / + captcha + POST verifikacije + GET
     # /PretragaBiracaPoAdresi) pre SVAKOG leaf-a. Server odbija reuse sesije i
     # form-tokena posle jednog uspešnog leaf-a — vraća 200 sa
@@ -756,7 +760,7 @@ fetch_and_write_address() {
     fi
 
     # Server često vraća 200 sa redirect JSON-om kad se prebrzo šalju leaf zahtevi — čak i sa svežom sesijom.
-    sleep 2
+    sleep "$BACKOFF_BASE"
 
     local response_file="${TMP_DIR}/voters_address.html"
     local http_code
@@ -766,7 +770,7 @@ fetch_and_write_address() {
     # IP rotacija — rotiramo i radimo nov pun init na novom IP-u. Bez nje
     # ostaje samo backoff (koji obično ne pomaže, ali ne pravi štetu).
     local attempt=0
-    while [[ ( "$http_code" == "429" || "$http_code" == "redirect" ) && $attempt -lt 3 ]]; do
+    while [[ ( "$http_code" == "429" || "$http_code" == "redirect" ) && $attempt -lt 5 ]]; do
         [[ -f "$STOP_FLAG_FILE" ]] && return 1
         attempt=$((attempt + 1))
         if [[ -n "$ROTATE_IP_CMD" ]]; then
@@ -776,7 +780,7 @@ fetch_and_write_address() {
             fi
             sleep 3
         else
-            local wait_s=$((2 * attempt))
+            local wait_s=$((BACKOFF_BASE * attempt))
             warn "${http_code} za ${marker}, čekam ${wait_s}s (pokušaj #${attempt})"
             sleep $wait_s
         fi

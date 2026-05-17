@@ -749,7 +749,7 @@ fetch_and_write_address() {
     fi
 
     # Server često vraća 200 sa redirect JSON-om kad se prebrzo šalju leaf zahtevi — čak i sa svežom sesijom.
-    sleep 1.5
+    sleep 2
 
     local response_file="${TMP_DIR}/voters_address.html"
     local http_code

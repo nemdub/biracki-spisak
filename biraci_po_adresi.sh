@@ -71,6 +71,11 @@ OUTPUT_DIR="./output"
 # instanci, i između više istovremeno pokrenutih instanci na istom računaru.
 TMP_DIR_BASE="./output/tmp"
 QUEUE_FILE="${TMP_DIR_BASE}/queue.txt"
+# Postojanje fajla signalizira workerima da stanu na sledećoj granici iteracije
+# (između adresa i između lokaliteta) bez novog posla. Main ga touch-uje u
+# SIGINT/SIGTERM trapu pre nego što pošalje SIGTERM workerima. Workeri ga
+# proveravaju na vrhu svakih retry/loop petlji.
+STOP_FLAG_FILE="${TMP_DIR_BASE}/stop_signal"
 # Lock je direktorijum (mkdir je atomično na svim FS-ovima i radi i na macOS-u
 # gde nema flock-a podrazumevano). pop_locality mkdir-uje pre čitanja, rmdir-uje
 # posle.
@@ -194,6 +199,9 @@ check_dependencies() {
 
 setup_directories() {
     mkdir -p "$OUTPUT_DIR" "$TMP_DIR_BASE" "$CACHE_DIR" "$STATE_DIR"
+    # Eventualni leftover iz prethodnog run-a (npr. kraš pre nego što je
+    # `setup_directories` pozvan u sledećem run-u).
+    rm -f "$STOP_FLAG_FILE"
 }
 
 validate_credentials() {
@@ -358,6 +366,8 @@ _init_session_once() {
 init_session() {
     local attempt=0
     while (( attempt <= 3 )); do
+        # Hard-stop: ako je korisnik pritisnuo Ctrl-C, ne ulazi u novi pokušaj.
+        [[ -f "$STOP_FLAG_FILE" ]] && return 1
         if _init_session_once; then
             return 0
         fi
@@ -481,6 +491,7 @@ fetch_dropdown_retry() {
     local attempt=0
     local -r max_attempts=5
     while (( attempt < max_attempts )); do
+        [[ -f "$STOP_FLAG_FILE" ]] && return 1
         attempt=$((attempt + 1))
         if body=$(fetch_dropdown "$endpoint" "$param_name" "$param_value"); then
             count=$(echo "$body" | jq 'length')
@@ -760,6 +771,7 @@ fetch_and_write_address() {
     # ostaje samo backoff (koji obično ne pomaže, ali ne pravi štetu).
     local attempt=0
     while [[ ( "$http_code" == "429" || "$http_code" == "redirect" ) && $attempt -lt 3 ]]; do
+        [[ -f "$STOP_FLAG_FILE" ]] && return 1
         attempt=$((attempt + 1))
         if [[ -n "$ROTATE_IP_CMD" ]]; then
             warn "${http_code} za ${marker}, rotiram IP (pokušaj #${attempt})"
@@ -1065,6 +1077,9 @@ scrape_locality() {
 
     local mesto_id ulica_id kucni_id
     while IFS=$'\t' read -r mesto_id ulica_id kucni_id; do
+        # Hard-stop posle Ctrl-C: ne uzimaj novu adresu. Već započete pišu se
+        # atomski u kritičnoj sekciji u fetch_and_write_address.
+        [[ -f "$STOP_FLAG_FILE" ]] && break
         [[ -z "$kucni_id" ]] && continue
         current=$((current + 1))
         local marker="${mesto_id}:${ulica_id}:${kucni_id}"
@@ -1186,6 +1201,8 @@ worker_loop() {
     worker_init
     local line id name
     while :; do
+        # Hard-stop posle Ctrl-C: ne pop-uj novi lokalitet iz reda.
+        [[ -f "$STOP_FLAG_FILE" ]] && break
         line=$(pop_locality)
         [[ -z "$line" ]] && break
         IFS=$'\t' read -r id name <<< "$line"
@@ -1301,7 +1318,21 @@ main() {
         # čisti queue + dirove). Workeri imaju nasledni SIGINT/SIGTERM trap
         # iz globalnog set-a na dnu fajla — exit-uju 130 i (na bash 3.2) ne
         # čiste se sami; glob u main EXIT trap-u to pokriva.
-        trap 'kill $(jobs -p) 2>/dev/null || true; echo ""; warn "Prekinuto. Pokreni ponovo da nastaviš sa rezimea."; exit 130' SIGINT SIGTERM
+        # Hard-stop drain: signaliziramo workerima preko flag fajla (proveravan
+        # na svim loop/retry granicama), pošaljemo SIGTERM da prekinemo blocking
+        # sleep ili curl --max-time wait, pa `wait`-ujemo na njih PRE exit-a.
+        # Bez `wait`-a, EXIT trap niže bi `rm -rf`-ovao worker TMP_DIR-ove dok
+        # workeri još koriste cookie jar / response fajlove, generišući bučne
+        # greške i potencijalno gubeći već fetch-ovan response u letu.
+        trap '
+            echo ""
+            warn "Prekinuto. Čekam workere da završe..."
+            touch "$STOP_FLAG_FILE"
+            kill -TERM $(jobs -p) 2>/dev/null || true
+            wait
+            warn "Pokreni ponovo da nastaviš sa rezimea."
+            exit 130
+        ' SIGINT SIGTERM
         local w
         for ((w=1; w<=parallel; w++)); do
             WORKER_ID=$w worker_loop &

@@ -161,12 +161,8 @@ curl_debug() {
         if [[ -n "$output_file" && "$output_file" != "/dev/null" && -s "$output_file" ]]; then
             total=$(wc -c < "$output_file" | tr -d ' ')
             printf '< body (%d bytes):\n' "$total"
-            head -c 200 "$output_file"
-            if (( total > 200 )); then
-                printf '\n< [... truncated, total %d bytes ...]\n' "$total"
-            else
-                echo
-            fi
+            cat "$output_file"
+            echo
         fi
     } >> "$DEBUG_LOG"
 
@@ -820,10 +816,12 @@ fetch_and_write_address() {
             fi
             return 1
         fi
-        # Validan prazan rezultat — markiraj atomično u odnosu na SIGINT.
-        trap '' SIGINT SIGTERM
+        # Validan prazan rezultat — markiraj atomično. SIGHUP uključen za slučaj
+        # da terminal nestane (SSH drop, zatvaranje laptopa) usred pisanja —
+        # default SIGHUP handler ubija proces i ostavlja state nesinkronizovan.
+        trap '' SIGINT SIGTERM SIGHUP
         echo "$marker" >> "$state_file"
-        trap 'echo ""; warn "Prekinuto. Pokreni ponovo da nastaviš sa rezimea."; exit 130' SIGINT SIGTERM
+        trap 'echo ""; warn "Prekinuto. Pokreni ponovo da nastaviš sa rezimea."; exit 130' SIGINT SIGTERM SIGHUP
         return 0
     fi
 
@@ -833,8 +831,9 @@ fetch_and_write_address() {
     fi
 
     # Kritična sekcija: redovi u CSV i marker u state moraju proći zajedno.
-    # Bez ovoga Ctrl-C između printf-a i echo-a ostavlja CSV/state nesaglasne.
-    trap '' SIGINT SIGTERM
+    # Bez ovoga Ctrl-C/SIGHUP između printf-a i echo-a ostavlja CSV/state
+    # nesaglasne — što je upravo izvor "stale marker" / "ponovni fetch" simptoma.
+    trap '' SIGINT SIGTERM SIGHUP
     local rows_written=0
     local row_ts
     row_ts=$(date +%s)
@@ -856,40 +855,45 @@ fetch_and_write_address() {
     done
 
     echo "$marker" >> "$state_file"
-    trap 'echo ""; warn "Prekinuto. Pokreni ponovo da nastaviš sa rezimea."; exit 130' SIGINT SIGTERM
+    trap 'echo ""; warn "Prekinuto. Pokreni ponovo da nastaviš sa rezimea."; exit 130' SIGINT SIGTERM SIGHUP
     return 0
 }
 
 # ----------------------------------------------------------------------------
 # Resume audit
 # ----------------------------------------------------------------------------
-# Markeri u state fajlu su autoritativna lista "gotovih" adresa, ali ako je
-# script ranije bio prekinut (ili je leaf imao tranzijentnu praznu odgovor)
-# moguće je da marker postoji bez odgovarajućeg reda u CSV-u. Ova funkcija
-# uklanja takve "stale" markere pre nego što počne glavna petlja, tako da se
-# nedostajuće adrese ponovo dohvate.
+# Cilj: state file da reflektuje realnost CSV-a. Dva moguća rasterećenja:
 #
-# Verifikacija: za svaki marker mesto:ulica:kucni iz tree-a izvedemo trojku
-# imena (Mesto, Ulica, KucniBroj) i proverimo da li u CSV-u postoji bar jedan
-# red sa tom trojkom u kolonama 3–5. Ako ne — marker je stale, brisimo ga.
+#   (a) marker postoji u state-u ali (Mesto, Ulica, KucniBroj) trio NIJE u CSV-u
+#       — adresa je legitimno bila prazna (samo <th> ćelije) ili je tree menjan.
+#       Zadržavamo marker (tako da se NE refetch-uje); za prazne adrese ovo
+#       sprečava ponovni rad svakog restarta.
+#
+#   (b) trio postoji u CSV-u ali marker NIJE u state-u — pisanje state-a je
+#       prekinuto (Ctrl-C između CSV i state writes pre nego što je kritična
+#       sekcija postojala, SIGHUP, ranija verzija skripte, prekid pre f5d051e).
+#       Self-heal: backfill-ujemo marker u state iz tree-a, tako da glavna
+#       petlja `grep -qxF` skip-uje ovu adresu i ne pravi duplikat reda.
+#
+# Bez (b)-a, nakon Ctrl-C-a, gomilali smo duplikate u CSV-u na svakom restartu
+# jer state nije "video" red u CSV-u. Empirijski (npr. lokalitet 271): 4809
+# jedinstvenih CSV trojki, 753 state markera — 4056 adresa bi se refetch-ovalo
+# pri sledećem run-u. Sa backfill-om, state se rekonstruiše iz CSV-a.
 audit_state_against_csv() {
     local locality_id=$1
     local state_file=$2
     local csv_file=$3
     local tree_file=$4
 
-    [[ -s "$state_file" ]] || return 0
-
     if [[ ! -f "$csv_file" ]]; then
-        local stale_count
-        stale_count=$(wc -l < "$state_file" | tr -d ' ')
-        warn "Audit lokaliteta ${locality_id}: CSV ne postoji, brišem ${stale_count} stale markera"
-        : > "$state_file"
+        # Bez CSV-a nema čime da se verifikuje. Ako u state-u ima markera, to su
+        # bile prazne adrese ili tree drift — zadržavamo (defensive).
         return 0
     fi
 
     local tmp_csv_keys="${TMP_DIR}/audit_csv_keys_${locality_id}.txt"
     local tmp_marker_map="${TMP_DIR}/audit_marker_map_${locality_id}.txt"
+    local tmp_state_in="${TMP_DIR}/audit_state_in_${locality_id}.txt"
     local tmp_kept="${TMP_DIR}/audit_state_kept_${locality_id}.txt"
     local tmp_stats="${TMP_DIR}/audit_stats_${locality_id}.txt"
 
@@ -908,6 +912,12 @@ audit_state_against_csv() {
         | "\($m.id):\($u.id):\(.Value)\t\($m.name)|\($u.name)|\(.Text)"
     ' "$tree_file" > "$tmp_marker_map"
 
+    if [[ -s "$state_file" ]]; then
+        cp "$state_file" "$tmp_state_in"
+    else
+        : > "$tmp_state_in"
+    fi
+
     awk -F'\t' \
         -v csv_keys_file="$tmp_csv_keys" \
         -v stats_file="$tmp_stats" '
@@ -915,47 +925,51 @@ audit_state_against_csv() {
             while ((getline line < csv_keys_file) > 0) csv_keys[line] = 1
             close(csv_keys_file)
         }
+        # Faza 1: čitamo marker_to_key iz tree map-a.
         FNR == NR {
             marker_to_key[$1] = $2
             next
         }
+        # Faza 2: čitamo postojeće state markere. Zadržavamo SVE (uključujući
+        # one kojima trio nije u CSV-u — prazne adrese; i one koji nisu u tree-u
+        # — defensive). Drop-ujemo samo prave duplikate (već viđeni marker).
         {
             marker = $0
             if (marker == "") next
-            if (!(marker in marker_to_key)) {
-                # Marker nije u tree-u (tree možda menjan); ne možemo proveriti — zadržavamo.
-                print marker
-                kept++
-                next
-            }
-            if (marker_to_key[marker] in csv_keys) {
-                print marker
-                kept++
-            } else {
-                dropped++
-            }
+            if (marker in seen_state) next
+            seen_state[marker] = 1
+            print marker
+            kept++
         }
         END {
-            printf "%d\t%d\n", kept+0, dropped+0 > stats_file
+            # Faza 3: backfill — za svaki tree marker čiji je trio u CSV-u,
+            # dodaj ga ako već nije u state-u.
+            for (m in marker_to_key) {
+                if (marker_to_key[m] in csv_keys && !(m in seen_state)) {
+                    print m
+                    backfilled++
+                }
+            }
+            printf "%d\t%d\n", kept+0, backfilled+0 > stats_file
         }
-    ' "$tmp_marker_map" "$state_file" > "$tmp_kept"
+    ' "$tmp_marker_map" "$tmp_state_in" > "$tmp_kept"
 
-    local stats kept_count dropped_count
+    local stats kept_count backfilled_count
     stats=$(cat "$tmp_stats" 2>/dev/null)
     kept_count=${stats%%$'\t'*}
-    dropped_count=${stats##*$'\t'}
+    backfilled_count=${stats##*$'\t'}
     : "${kept_count:=0}"
-    : "${dropped_count:=0}"
+    : "${backfilled_count:=0}"
 
-    if (( dropped_count > 0 )); then
+    if (( backfilled_count > 0 )); then
         mv -f "$tmp_kept" "$state_file"
-        info "Audit lokaliteta ${locality_id}: zadržano ${kept_count}, uklonjeno ${dropped_count} stale markera"
+        info "Audit lokaliteta ${locality_id}: zadržano ${kept_count}, backfill iz CSV-a ${backfilled_count}"
     else
         rm -f "$tmp_kept"
-        info "Audit lokaliteta ${locality_id}: zadržano ${kept_count}, uklonjeno 0 stale markera"
+        info "Audit lokaliteta ${locality_id}: zadržano ${kept_count}, backfill 0"
     fi
 
-    rm -f "$tmp_csv_keys" "$tmp_marker_map" "$tmp_stats"
+    rm -f "$tmp_csv_keys" "$tmp_marker_map" "$tmp_state_in" "$tmp_stats"
 }
 
 # ----------------------------------------------------------------------------
@@ -1157,6 +1171,7 @@ worker_init() {
     TMP_DIR="${TMP_DIR_BASE}/worker_${key}"
     DEBUG_LOG="${OUTPUT_DIR}/debug_worker_${key}.log"
     mkdir -p "$TMP_DIR"
+    [[ "$DEBUG" == "1" ]] && info "DEBUG=1: pišem u $DEBUG_LOG"
     # NAMERNO ne postavljamo EXIT trap ovde:
     #   - U PARALLEL=1 modu worker_init se zove u glavnom procesu, pa bi EXIT
     #     trap pregazio main-ov koji čisti queue/lock i sve worker_${$}_* dirove.

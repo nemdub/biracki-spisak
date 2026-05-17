@@ -80,7 +80,7 @@ QUEUE_LOCK_DIR="${TMP_DIR_BASE}/queue.lock.d"
 CACHE_DIR="./data/cache"
 STATE_DIR="./output/state"
 COMBINED_CSV="${OUTPUT_DIR}/biraci_po_adresi_svi.csv"
-CSV_HEADER='"LokalitetId","Opstina","Mesto","Ulica","KucniBroj","Sprat","Stan","BiracaPrebivaliste","BiracaBoraviste"'
+CSV_HEADER='"LokalitetId","Opstina","Mesto","Ulica","KucniBroj","Sprat","Stan","BiracaPrebivaliste","BiracaBoraviste","Timestamp"'
 # DEBUG_LOG se postavlja per-worker u worker_init (output/debug_worker_<pid>.log)
 # da paralelni >> appendi ne bi razbijali jedan zajednički log.
 DEBUG_LOG=""
@@ -464,7 +464,7 @@ fetch_dropdown() {
 }
 
 # Wrapper oko fetch_dropdown-a za tree-build. fetch_dropdown sam radi jedan
-# jeftin refresh_token retry; ovde dodajemo do 3 puna pokušaja sa
+# jeftin refresh_token retry; ovde dodajemo do 5 punih pokušaja sa
 # init_session-om (i opcionalnom IP rotacijom) između — analogno leaf-fetch
 # retry petlji u fetch_and_write_address. Empty array se tretira kao greška:
 # u domenu, ulica nikad nema 0 kućnih brojeva, mesto nikad 0 ulica, opština
@@ -479,7 +479,7 @@ fetch_dropdown_retry() {
 
     local body count
     local attempt=0
-    local -r max_attempts=3
+    local -r max_attempts=5
     while (( attempt < max_attempts )); do
         attempt=$((attempt + 1))
         if body=$(fetch_dropdown "$endpoint" "$param_name" "$param_value"); then
@@ -824,9 +824,11 @@ fetch_and_write_address() {
     # Bez ovoga Ctrl-C između printf-a i echo-a ostavlja CSV/state nesaglasne.
     trap '' SIGINT SIGTERM
     local rows_written=0
+    local row_ts
+    row_ts=$(date +%s)
     local j
     for (( j=0; j<n; j+=8 )); do
-        printf '"%s","%s","%s","%s","%s","%s","%s","%s","%s"\n' \
+        printf '"%s","%s","%s","%s","%s","%s","%s","%s","%s","%s"\n' \
             "$locality_id" \
             "${cells[j]}" \
             "${cells[j+1]}" \
@@ -836,6 +838,7 @@ fetch_and_write_address() {
             "${cells[j+5]}" \
             "${cells[j+6]}" \
             "${cells[j+7]}" \
+            "$row_ts" \
             >> "$csv_file"
         rows_written=$((rows_written + 1))
     done
@@ -941,6 +944,76 @@ audit_state_against_csv() {
     fi
 
     rm -f "$tmp_csv_keys" "$tmp_marker_map" "$tmp_stats"
+}
+
+# ----------------------------------------------------------------------------
+# CSV migration: backfill Timestamp kolonu u CSV-ovima nastalim pre uvođenja
+# te kolone. Detekcija: header ne sadrži "Timestamp". Vrednost: mtime fajla
+# (unix sekunde) — gruba aproksimacija, ali bolje nego prazno. Idempotentno —
+# već migrirani fajlovi se preskaču. Zove se u main() pre nego što workeri
+# krenu da pišu, da se izbegne race gde worker appenduje 10-kolonski red u
+# još 9-kolonski fajl.
+#
+# Takođe popravlja CSV-ove oštećene ranijom verzijom ove funkcije, koja je
+# (pogrešno na Linuxu) ubacivala `stat -f %m` filesystem-info blok u svaki red.
+# Detekcija oštećenja: red sadrži "  File: ". Recovery uzima izvorni mtime iz
+# embedded numeric line-a i prepisuje svaki data red samo prvim 9 polja + ts.
+# ----------------------------------------------------------------------------
+migrate_csv_timestamps() {
+    local f mtime
+    shopt -s nullglob
+    for f in "${OUTPUT_DIR}"/biraci_po_adresi_*.csv; do
+        [[ "$f" == "$COMBINED_CSV" ]] && continue
+        [[ ! -s "$f" ]] && continue
+
+        # Recovery path: prethodna verzija je upisala višeredni `stat -f`
+        # output kao Timestamp vrednost. Signatura — bilo koji red sadrži
+        # "  File: " (linija iz `stat -f` outputa).
+        if grep -q '  File: ' "$f" 2>/dev/null; then
+            local recovered_mtime
+            # Originalni mtime je sačuvan kao standalone numeric line unutar
+            # garbage bloka — uzmi prvi takav.
+            recovered_mtime=$(awk '/^[0-9]+"$/ { sub(/"$/, "", $0); print $0; exit }' "$f")
+            if [[ -z "$recovered_mtime" ]]; then
+                warn "Ne mogu da izvučem originalni mtime iz $f, koristim trenutni"
+                recovered_mtime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
+            fi
+            warn "Popravljam oštećenja u $f (mtime=${recovered_mtime})"
+            local tmp="${f}.migrate.tmp"
+            awk -v ts="$recovered_mtime" -v hdr="$CSV_HEADER" '
+                BEGIN { print hdr }
+                /^"[0-9]+",/ {
+                    n = split($0, a, "\",\"")
+                    if (n < 9) next
+                    out = a[1]
+                    for (i = 2; i <= 9; i++) out = out "\",\"" a[i]
+                    # a[9] je BiracaBoraviste bez prateći ", jer je split
+                    # konzumirao ", između nje i početka garbage-a.
+                    out = out "\",\"" ts "\""
+                    print out
+                }
+            ' "$f" > "$tmp" && mv "$tmp" "$f"
+            continue
+        fi
+
+        if head -1 "$f" | grep -q 'Timestamp'; then
+            continue
+        fi
+        # Linux GNU stat: -c %Y. macOS BSD stat: -f %m. GNU stat -f znači
+        # "filesystem status" i pravi smeće — zato GNU forma ide prva.
+        mtime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
+        if [[ -z "$mtime" ]]; then
+            warn "migrate_csv_timestamps: ne mogu da pročitam mtime za $f, preskačem"
+            continue
+        fi
+        info "Migriram $f (mtime=${mtime})"
+        local tmp="${f}.migrate.tmp"
+        {
+            echo "$CSV_HEADER"
+            tail -n +2 "$f" | awk -v ts="$mtime" '{ printf "%s,\"%s\"\n", $0, ts }'
+        } > "$tmp" && mv "$tmp" "$f"
+    done
+    shopt -u nullglob
 }
 
 # ----------------------------------------------------------------------------
@@ -1132,6 +1205,7 @@ main() {
     check_dependencies
     setup_directories
     validate_credentials
+    migrate_csv_timestamps
 
     if [[ ! -f "$LOCALITIES_FILE" ]]; then
         error "Nedostaje fajl: $LOCALITIES_FILE"

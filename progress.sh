@@ -9,7 +9,7 @@
 # output/locality_totals.csv (kolona kucni_brojevi).
 #
 # Po defaultu prikazuje samo lokalitete koji su započeti (processed > 0).
-# Sa --all prikazuje sve, --done samo 100% kompletirane.
+# Sa --all prikazuje sve, --wip samo u progresu, --done samo 100% kompletirane.
 #
 # Read-only — ne menja state/CSV fajlove.
 # ============================================================================
@@ -29,10 +29,11 @@ NC='\033[0m'
 TOTALS_CSV="./output/locality_totals.csv"
 STATE_DIR="./output/state"
 
-MODE="active"  # active | all | done
+MODE="active"  # active | all | wip | done
 for arg in "$@"; do
     case "$arg" in
         --all)  MODE="all" ;;
+        --wip) MODE="wip" ;;
         --done) MODE="done" ;;
         -h|--help)
             cat <<EOF
@@ -112,6 +113,7 @@ echo
 echo
 case "$MODE" in
     active) echo -e "${BOLD}== Aktivni lokaliteti (processed > 0) ==${NC}" ;;
+    wip)   echo -e "${BOLD}== Lokaliteti u progresu ==${NC}" ;;
     done)   echo -e "${BOLD}== Završeni lokaliteti ==${NC}" ;;
     all)    echo -e "${BOLD}== Svi lokaliteti ==${NC}" ;;
 esac
@@ -143,6 +145,7 @@ for i in "${!ids[@]}"; do
 
     case "$MODE" in
         active) [[ "$status" == "TODO" || "$status" == "EMPTY" ]] && continue ;;
+        wip)   [[ "$status" != "WIP" ]] && continue ;;
         done)   [[ "$status" != "DONE" ]] && continue ;;
     esac
 

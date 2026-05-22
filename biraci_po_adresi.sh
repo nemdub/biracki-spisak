@@ -10,19 +10,8 @@
 # Izvor podataka: https://upit.birackispisak.gov.rs/PretragaBiracaPoAdresi
 #
 # Konfiguracija preko environment varijabli:
-#   CREDENTIALS_FILE - opciono, putanja do fajla sa više JMBG,DOCUMENT_ID parova
-#                      (jedan po liniji, "JMBG,DOCUMENT_ID"; # i prazne linije
-#                      se ignorišu). Ako je postavljeno, skripta rotira kroz
-#                      parove: jedan par po leaf upitu (i po tree-buildu).
-#                      Bez ovog, koristi se JMBG/DOCUMENT_ID kao jedinstveni par.
-#   JMBG          - 13-cifreni JMBG (obavezno ako CREDENTIALS_FILE nije set)
-#   DOCUMENT_ID   - broj lične karte (obavezno ako CREDENTIALS_FILE nije set)
-#   CRED_COOLDOWN_S - opciono, koliko sekundi da držimo kredencijal u cooldown-u
-#                     nakon što server signalizira ban (302 na /PretragaBiracaPoAdresi
-#                     posle Step 4 verifikacije). Default 1800 (30 min). Banovani
-#                     parovi se preskaču u rotate_credentials; ako su SVI u cooldown-u
-#                     skripta čeka do najbližeg isteka. Ovo važi per-worker —
-#                     paralelni workeri prate svoje tabele zasebno.
+#   JMBG          - 13-cifreni JMBG (obavezno)
+#   DOCUMENT_ID   - broj lične karte (obavezno)
 #   MAX_LOCALITIES - opciono, ograničava broj lokaliteta za obradu
 #   REFRESH_TREE  - opciono, ako je "1" ponovo gradi stablo lokaliteta
 #   LEAF_SLEEP    - opciono, sekunde između leaf zahteva (default 0 sa rotacijom,
@@ -34,6 +23,13 @@
 #                     ROTATE_IP_CMD="nordvpn d && nordvpn c"
 #                     ROTATE_IP_CMD="expressvpn disconnect && expressvpn connect smart"
 #                   Bez ove varijable, skripta samo čeka 60-180s na 429.
+#   IP_CHECK_INTERVAL - opciono, na svakih N obrađenih leaf adresa zabeleži
+#                   izlazni IP koji curl koristi (kroz isti proxy/headere).
+#                   Korisno za potvrdu da IP rotacija stvarno menja IP i za
+#                   dijagnozu rate-limita. Default 10; 0 isključuje proveru.
+#   IP_ECHO_URL   - opciono, servis koji vraća izlazni IP (default
+#                   https://api.ipify.org). Pogađa se kroz isti $PROXY pa NE
+#                   troši per-IP budžet gov servera (drugi host).
 #   PARALLEL      - opciono, broj paralelnih workera (default 1). Svaki worker
 #                   obrađuje po jedan lokalitet iz deljenog reda, sa sopstvenim
 #                   cookie jar-om i tmp direktorijumom (output/tmp/worker_<pid>).
@@ -48,6 +44,11 @@
 #                 preskače skupljanje birača po adresama. Komponuje se sa
 #                 REFRESH_TREE=1 (force rebuild), PARALLEL=N (paralelna gradnja
 #                 stabala) i listom lokaliteta.
+#   --randomize:  obrađuje leaf adrese unutar svakog lokaliteta nasumičnim
+#                 redosledom (mesta/ulice/kućni brojevi se mešaju pre obrade).
+#                 Redosled lokaliteta ostaje FIFO iz reda. Korisno za
+#                 de-klumping retry-ja nakon rate-limit cooldown-a i kad više
+#                 workera deli isti IP.
 # ============================================================================
 
 set -e
@@ -65,14 +66,24 @@ BOLD='\033[1m'
 BASE_URL="https://upit.birackispisak.gov.rs"
 # Server filtrira po User-Agentu: default curl/X.X dobija 302 -> /Home/Error.
 # Browser UA prolazi.
-USER_AGENT="Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.138 YaBrowser/20.6.0.910 (fnrbhc) Yowser/2.5 Yptp/1.23 Safari/537.36"
+USER_AGENT="Mozilla/5.0 (Macintosh; U; PPC Mac OS X 10_9_4) AppleWebKit/535.0 (KHTML, like Gecko) Chrome/17.0.876.0 Safari/535.0"
 # Headeri koji idu uz SVAKI zahtev. Definisani na jednom mestu da bi se
 # lako dodavali novi.
 # $PROXY primer: socks5://USERNAME:PASSWORD@dcp.evomi.com:2002
+# PROXY se uključuje samo ako je env var postavljen — inače `-x ""` (prazan
+# string) prouzrokuje da curl pojede sledeći argument kao proxy spec i sve
+# pukne na Step 1 sa praznim HTTP kodom.
 CORE_HEADERS=(
     -A "$USER_AGENT"
-    -x $PROXY
 )
+if [[ -n "$PROXY" ]]; then
+    CORE_HEADERS+=(-x "$PROXY")
+fi
+# Povremena provera izlaznog IP-a (vidi log_egress_ip). Brojanje je per-worker
+# preko $LEAF_PROCESSED_COUNT — svaki worker je zaseban proces pa ne dele brojač.
+IP_CHECK_INTERVAL="${IP_CHECK_INTERVAL:-10}"
+IP_ECHO_URL="${IP_ECHO_URL:-https://api.ipify.org}"
+LEAF_PROCESSED_COUNT=0
 LOCALITIES_FILE="./data/localities.json"
 OUTPUT_DIR="./output"
 # TMP_DIR_BASE je root za sve per-worker tmp direktorijume. Svaki worker
@@ -100,21 +111,6 @@ CSV_HEADER='"LokalitetId","Opstina","Mesto","Ulica","KucniBroj","Sprat","Stan","
 # DEBUG_LOG se postavlja per-worker u worker_init (output/debug_worker_<pid>.log)
 # da paralelni >> appendi ne bi razbijali jedan zajednički log.
 DEBUG_LOG=""
-
-# Pool kredencijala: paralelni arrays popunjeni iz CREDENTIALS_FILE ili iz
-# pojedinačnih JMBG/DOCUMENT_ID env varijabli (one-entry fallback). CRED_IDX
-# je per-worker pokazivač u pool — u PARALLEL>1 modu svaki worker je subshell
-# i ima sopstveni CRED_IDX (i sopstvene JMBG/DOCUMENT_ID), pa nema deljenja
-# preko procesnih granica.
-CRED_JMBGS=()
-CRED_DOCS=()
-CRED_IDX=0
-# Per-cred expiry timestamps (unix sekunde) — vrednost <= now() znači "slobodan".
-# Inicijalizovano u load_credentials (0 po slotu).
-CRED_COOLDOWN_UNTIL=()
-# Konfigurabilan cooldown period. Default 30 min — empirijski (videti analizu
-# rate-limita): server drži ban najmanje 3 min, gornja granica nepoznata.
-CRED_COOLDOWN_S=${CRED_COOLDOWN_S:-1800}
 
 # U paralelnom modu, svaka log linija dobija [W#] prefiks da bi se output od
 # različitih workera lako razdvajao. WORKER_ID se postavlja u worker_init samo
@@ -226,70 +222,11 @@ setup_directories() {
     rm -f "$STOP_FLAG_FILE"
 }
 
-# Učitava pool kredencijala u CRED_JMBGS / CRED_DOCS. Ako je CREDENTIALS_FILE
-# postavljen — parsira fajl (jedan "JMBG,DOCUMENT_ID" par po liniji, # i prazne
-# linije se ignorišu). Inače — uzima JMBG/DOCUMENT_ID env varijable kao
-# jedinstveni par (backwards-compat). Validacija je ista u oba slučaja:
-# JMBG mora biti 13 cifara, DOCUMENT_ID ne sme biti prazan.
+# Validira JMBG / DOCUMENT_ID env varijable. JMBG mora biti 13 cifara,
+# DOCUMENT_ID ne sme biti prazan.
 load_credentials() {
-    CRED_JMBGS=()
-    CRED_DOCS=()
-    CRED_COOLDOWN_UNTIL=()
-    local invalid=0
-
-    if [[ -n "$CREDENTIALS_FILE" ]]; then
-        if [[ ! -f "$CREDENTIALS_FILE" ]]; then
-            error "CREDENTIALS_FILE ne postoji: $CREDENTIALS_FILE"
-            exit 1
-        fi
-        local lineno=0 raw jmbg doc
-        while IFS= read -r raw || [[ -n "$raw" ]]; do
-            lineno=$((lineno + 1))
-            raw="${raw%$'\r'}"
-            raw="${raw#"${raw%%[![:space:]]*}"}"
-            raw="${raw%"${raw##*[![:space:]]}"}"
-            [[ -z "$raw" ]] && continue
-            [[ "$raw" == \#* ]] && continue
-            jmbg="${raw%%,*}"
-            doc="${raw#*,}"
-            if [[ "$doc" == "$raw" ]]; then
-                warn "CREDENTIALS_FILE linija ${lineno}: nema zareza, preskačem"
-                invalid=$((invalid + 1))
-                continue
-            fi
-            jmbg="${jmbg#"${jmbg%%[![:space:]]*}"}"
-            jmbg="${jmbg%"${jmbg##*[![:space:]]}"}"
-            doc="${doc#"${doc%%[![:space:]]*}"}"
-            doc="${doc%"${doc##*[![:space:]]}"}"
-            if [[ ! "$jmbg" =~ ^[0-9]{13}$ ]]; then
-                warn "CREDENTIALS_FILE linija ${lineno}: JMBG '${jmbg}' nije 13 cifara, preskačem"
-                invalid=$((invalid + 1))
-                continue
-            fi
-            if [[ -z "$doc" ]]; then
-                warn "CREDENTIALS_FILE linija ${lineno}: prazan DOCUMENT_ID, preskačem"
-                invalid=$((invalid + 1))
-                continue
-            fi
-            CRED_JMBGS+=("$jmbg")
-            CRED_DOCS+=("$doc")
-            CRED_COOLDOWN_UNTIL+=(0)
-        done < "$CREDENTIALS_FILE"
-
-        if (( ${#CRED_JMBGS[@]} == 0 )); then
-            error "CREDENTIALS_FILE (${CREDENTIALS_FILE}) ne sadrži nijedan validan par"
-            exit 1
-        fi
-        if (( invalid > 0 )); then
-            warn "CREDENTIALS_FILE: ${invalid} linija preskočeno, ${#CRED_JMBGS[@]} validnih parova učitano"
-        else
-            info "Učitano ${#CRED_JMBGS[@]} kredencijalnih parova iz ${CREDENTIALS_FILE}"
-        fi
-        return 0
-    fi
-
     if [[ -z "$JMBG" ]]; then
-        error "Nedostaje JMBG (postavi environment varijablu JMBG ili CREDENTIALS_FILE)"
+        error "Nedostaje JMBG (postavi environment varijablu JMBG)"
         exit 1
     fi
     if [[ ! "$JMBG" =~ ^[0-9]{13}$ ]]; then
@@ -297,78 +234,9 @@ load_credentials() {
         exit 1
     fi
     if [[ -z "$DOCUMENT_ID" ]]; then
-        error "Nedostaje DOCUMENT_ID (postavi environment varijablu DOCUMENT_ID ili CREDENTIALS_FILE)"
+        error "Nedostaje DOCUMENT_ID (postavi environment varijablu DOCUMENT_ID)"
         exit 1
     fi
-    CRED_JMBGS+=("$JMBG")
-    CRED_DOCS+=("$DOCUMENT_ID")
-    CRED_COOLDOWN_UNTIL+=(0)
-}
-
-# Postavlja globalne JMBG / DOCUMENT_ID na sledeći SLOBODAN par iz pool-a
-# (preskače parove čiji CRED_COOLDOWN_UNTIL > now) i pomera CRED_IDX. Ako su
-# SVI parovi u cooldown-u, čeka do najbližeg isteka (spava u 1s koracima da
-# bi mogla da reaguje na STOP_FLAG_FILE / Ctrl-C). Vraća 1 samo kad je STOP
-# flag postavljen tokom čekanja.
-#
-# CRED_LAST_IDX čuva indeks parova koji je upravo izabran (0-based) — log
-# poruke posle rotate_credentials koriste _cred_tag da kažu koji par.
-#
-# Bezbedno za PARALLEL>1: svaki worker je subshell pa ima sopstveni CRED_IDX,
-# CRED_COOLDOWN_UNTIL i JMBG/DOCUMENT_ID — nema deljenja preko procesnih granica
-# (kad jedan worker otkrije ban, drugi će ga sam pronaći nezavisno).
-rotate_credentials() {
-    local n=${#CRED_JMBGS[@]}
-    while :; do
-        [[ -f "$STOP_FLAG_FILE" ]] && return 1
-        local now
-        now=$(date +%s)
-        local checked=0
-        local soonest=0
-        while (( checked < n )); do
-            local i=$(( (CRED_IDX + checked) % n ))
-            local until_ts=${CRED_COOLDOWN_UNTIL[$i]:-0}
-            if (( until_ts <= now )); then
-                CRED_LAST_IDX=$i
-                JMBG="${CRED_JMBGS[$i]}"
-                DOCUMENT_ID="${CRED_DOCS[$i]}"
-                CRED_IDX=$(( (i + 1) % n ))
-                return 0
-            fi
-            if (( soonest == 0 || until_ts < soonest )); then
-                soonest=$until_ts
-            fi
-            checked=$((checked + 1))
-        done
-        local wait_s=$((soonest - now))
-        (( wait_s < 1 )) && wait_s=1
-        warn "Svih ${n} kredencijala u cooldown-u, čekam ${wait_s}s do najbližeg isteka"
-        local slept=0
-        while (( slept < wait_s )); do
-            [[ -f "$STOP_FLAG_FILE" ]] && return 1
-            sleep 1
-            slept=$((slept + 1))
-        done
-    done
-}
-
-# Markira par sa indeksom $1 kao banovan do now + CRED_COOLDOWN_S. Loguje
-# human-readable expiry, sa fallback-om za macOS BSD date (-r) vs Linux GNU
-# date (-d "@TS").
-mark_credential_banned() {
-    local idx=$1
-    local until_ts=$(($(date +%s) + CRED_COOLDOWN_S))
-    CRED_COOLDOWN_UNTIL[$idx]=$until_ts
-    local human
-    human=$(date -d "@${until_ts}" '+%H:%M:%S' 2>/dev/null \
-        || date -r "${until_ts}" '+%H:%M:%S' 2>/dev/null \
-        || echo "ts=${until_ts}")
-    warn "Cred #$((idx + 1))/${#CRED_JMBGS[@]} banovan, cooldown ${CRED_COOLDOWN_S}s (do ${human})"
-}
-
-# Kratak human-friendly tag za log poruke, npr. "[cred 2/5]". 1-based brojevi.
-_cred_tag() {
-    printf '[cred %d/%d]' "$((CRED_LAST_IDX + 1))" "${#CRED_JMBGS[@]}"
 }
 
 # ----------------------------------------------------------------------------
@@ -396,7 +264,6 @@ _cred_tag() {
 # čita to da bi razlikovao rate-limit od ostalih grešaka (parsing, mreža...).
 _init_session_once() {
     INIT_SESSION_HTTP_CODE=""
-    INIT_SESSION_BANNED=""
     COOKIE_JAR="${TMP_DIR}/cookies.txt"
     rm -f "$COOKIE_JAR"
     local page_file="${TMP_DIR}/main_page.html"
@@ -499,13 +366,6 @@ _init_session_once() {
     if [[ "$http_code" != "200" ]]; then
         error "Greška pri učitavanju /PretragaBiracaPoAdresi (HTTP: $http_code)"
         INIT_SESSION_HTTP_CODE=$http_code
-        # 302 specifično ovde = ban kredencijala: sesija je inicirana sve do
-        # Step 4 verifikacije, ali server odbija da postavi authenticated
-        # session za ovaj JMBG/Document jer je par dosegao quotu. Ovo je signal
-        # za rotate_credentials/mark_credential_banned u caller-ima.
-        if [[ "$http_code" == "302" ]]; then
-            INIT_SESSION_BANNED=1
-        fi
         return 1
     fi
 
@@ -578,6 +438,19 @@ refresh_token() {
         return 1
     fi
     return 0
+}
+
+# Best-effort: pogađa $IP_ECHO_URL kroz iste headere/proxy kao pravi zahtevi i
+# loguje izlazni IP. Drugi host od gov servera pa ne troši njegov per-IP budžet.
+# Nikad ne obara obradu — ako echo servis zakaže, samo upozori.
+log_egress_ip() {
+    local ip
+    ip=$(curl_debug -s --max-time 15 "${CORE_HEADERS[@]}" "$IP_ECHO_URL" 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$ip" ]]; then
+        info "Izlazni IP (curl): ${ip}"
+    else
+        warn "Provera izlaznog IP-a nije uspela (${IP_ECHO_URL})"
+    fi
 }
 
 # ----------------------------------------------------------------------------
@@ -684,14 +557,7 @@ fetch_dropdown_retry() {
             sleep $wait_s
         fi
         if ! init_session; then
-            # Markiraj ban da downstream leaf-ovi vide cooldown — tree-build sam
-            # ne rotira (jedan par per lokalitet), pa će ovaj retry ostati na
-            # istom paru i verovatno opet pasti. Eventualno se cap iscrpi i
-            # tree-build se prekida; korisnik može ponoviti run i pokupiti drugi par.
-            if [[ "$INIT_SESSION_BANNED" == "1" ]]; then
-                mark_credential_banned "$CRED_LAST_IDX"
-            fi
-            warn "${context}: init_session pao u retry-u $(_cred_tag)"
+            warn "${context}: init_session pao u retry-u"
         fi
     done
 
@@ -845,31 +711,12 @@ load_or_build_tree() {
         # Dropdown endpointi (DajSva...) zahtevaju captcha-verifikovanu sesiju,
         # pa init samo kad zaista gradimo. Leaf-loop više ne deli ovu sesiju —
         # svaki leaf ide kroz svoj pun init_session u fetch_and_write_address.
-        # Jedan kredencijalni par po lokalitetu: rotiramo pre init_session, pa
-        # svi dropdown sub-zahtevi (mesta/ulice/kućni brojevi) koriste istu sesiju.
-        # Loop koji preskače banovane parove (rotate_credentials interno čeka kad
-        # su svi u cooldown-u) — analogno init-block-u u fetch_and_write_address.
-        local tb_try=0
-        local tb_max=${#CRED_JMBGS[@]}
-        local tb_ok=0
-        while (( tb_try < tb_max )); do
-            [[ -f "$STOP_FLAG_FILE" ]] && return 1
-            rotate_credentials || return 1
-            tb_try=$((tb_try + 1))
-            warn "Tree-build za lokalitet ${locality_id}: ${rebuild_reason} $(_cred_tag)"
-            if init_session; then
-                tb_ok=1
-                break
-            fi
-            if [[ "$INIT_SESSION_BANNED" == "1" ]]; then
-                mark_credential_banned "$CRED_LAST_IDX"
-                continue
-            fi
-            error "init_session pao za tree-build lokaliteta ${locality_id} (non-ban)"
-            return 1
-        done
-        if (( tb_ok != 1 )); then
-            error "Svih ${tb_max} kredencijala banovano u tree-build-u lokaliteta ${locality_id}"
+        # Jedan init_session po lokalitetu, pa svi dropdown sub-zahtevi
+        # (mesta/ulice/kućni brojevi) koriste istu sesiju.
+        [[ -f "$STOP_FLAG_FILE" ]] && return 1
+        warn "Tree-build za lokalitet ${locality_id}: ${rebuild_reason}"
+        if ! init_session; then
+            error "init_session pao za tree-build lokaliteta ${locality_id}"
             return 1
         fi
         build_tree "$locality_id" || return 1
@@ -941,37 +788,23 @@ fetch_and_write_address() {
         return 0
     fi
 
+    # Povremena provera izlaznog IP-a — samo za stvarno obrađene adrese (posle
+    # skip-a već urađenih). if-uslov je izuzet iz `set -e`, pa (( ... == 0 ))
+    # koje vrati 1 (false) ne obara skriptu.
+    LEAF_PROCESSED_COUNT=$((LEAF_PROCESSED_COUNT + 1))
+    if (( IP_CHECK_INTERVAL > 0 )) && (( LEAF_PROCESSED_COUNT % IP_CHECK_INTERVAL == 1 )); then
+        log_egress_ip
+    fi
+
     local -r BACKOFF_BASE=2
 
     # Pun init_session (GET / + captcha + POST verifikacije + GET
     # /PretragaBiracaPoAdresi) pre SVAKOG leaf-a. Server odbija reuse sesije i
     # form-tokena posle jednog uspešnog leaf-a — vraća 200 sa
     # {"redirect":"/BiraciPoAdresi"} — pa nema smisla štedeti na inicijalizaciji.
-    # Rotiramo kredencijale pre svakog leaf-a i, ako init_session vrati ban
-    # signal (INIT_SESSION_BANNED=1), markiramo tekući par u cooldown i
-    # probamo sledeći. Loop maks N puta (N = veličina pool-a) — rotate_credentials
-    # interno čeka kad su SVI parovi u cooldown-u, pa bi cap bio dostignut samo
-    # ako se svi parovi banuju u jednom prolazu.
-    local init_try=0
-    local init_max=${#CRED_JMBGS[@]}
-    local init_ok=0
-    while (( init_try < init_max )); do
-        [[ -f "$STOP_FLAG_FILE" ]] && return 1
-        rotate_credentials || return 1
-        init_try=$((init_try + 1))
-        if init_session; then
-            init_ok=1
-            break
-        fi
-        if [[ "$INIT_SESSION_BANNED" == "1" ]]; then
-            mark_credential_banned "$CRED_LAST_IDX"
-            continue
-        fi
-        warn "init_session pao za ${marker} (non-ban), preskačem"
-        return 1
-    done
-    if (( init_ok != 1 )); then
-        warn "Svih ${init_max} kredencijala banovano u ovom prolazu za ${marker}, preskačem"
+    [[ -f "$STOP_FLAG_FILE" ]] && return 1
+    if ! init_session; then
+        warn "init_session pao za ${marker}, preskačem"
         return 1
     fi
 
@@ -989,26 +822,19 @@ fetch_and_write_address() {
     while [[ ( "$http_code" == "429" || "$http_code" == "redirect" ) && $attempt -lt 5 ]]; do
         [[ -f "$STOP_FLAG_FILE" ]] && return 1
         attempt=$((attempt + 1))
-        # Svaki retry koristi sledeći kredencijalni par iz pool-a — ako je
-        # tekući par credential-side rate-limited, sledeći može da prođe.
-        # Rotiramo pre warn-a da log poruka može da kaže koji par sledi.
-        rotate_credentials || return 1
         if [[ -n "$ROTATE_IP_CMD" ]]; then
-            warn "${http_code} za ${marker}, rotiram IP (pokušaj #${attempt}, $(_cred_tag))"
+            warn "${http_code} za ${marker}, rotiram IP (pokušaj #${attempt})"
             if ! eval "$ROTATE_IP_CMD"; then
                 warn "ROTATE_IP_CMD vratio grešku (nastavljam svejedno)"
             fi
             sleep 3
         else
             local wait_s=$((BACKOFF_BASE * attempt))
-            warn "${http_code} za ${marker}, čekam ${wait_s}s (pokušaj #${attempt}, $(_cred_tag))"
+            warn "${http_code} za ${marker}, čekam ${wait_s}s (pokušaj #${attempt})"
             sleep $wait_s
         fi
         if ! init_session; then
-            if [[ "$INIT_SESSION_BANNED" == "1" ]]; then
-                mark_credential_banned "$CRED_LAST_IDX"
-            fi
-            warn "init_session pao u retry-u za ${marker} $(_cred_tag)"
+            warn "init_session pao u retry-u za ${marker}"
             continue
         fi
         http_code=$(do_leaf_request "$locality_id" "$mesto_id" "$ulica_id" "$kucni_id" "$response_file")
@@ -1331,24 +1157,21 @@ scrape_locality() {
         # Sekvencijalni mod: printf bez \n + odvojeni echo na istoj liniji.
         # Paralelni mod: skupimo sve u jedan echo da različiti workeri ne bi
         # mešali "head ... " i "OK"/"FAIL" delove iste linije.
-        # _cred_tag reflektuje POSLEDNJI iskorišćeni par (uključujući i sve
-        # retry rotacije), tako da OK/FAIL linija pokazuje par koji je zaista
-        # poslednji pogodio server.
         if [[ -z "$WORKER_ID" ]]; then
             printf "  [%s] [%d/%d] %s ... " "$(date +%H:%M:%S)" "$current" "$total_leaves" "$marker"
             if fetch_and_write_address "$locality_id" "$mesto_id" "$ulica_id" "$kucni_id" "$csv_file" "$state_file"; then
-                echo -e "${GREEN}OK${NC} $(_cred_tag)"
+                echo -e "${GREEN}OK${NC}"
                 processed=$((processed + 1))
             else
-                echo -e "${RED}FAIL${NC} $(_cred_tag)"
+                echo -e "${RED}FAIL${NC}"
             fi
         else
             local _ts="$(date +%H:%M:%S)"
             if fetch_and_write_address "$locality_id" "$mesto_id" "$ulica_id" "$kucni_id" "$csv_file" "$state_file"; then
-                echo -e "  [W${WORKER_ID}] [${_ts}] [${current}/${total_leaves}] [${locality_id}] ${marker} ... ${GREEN}OK${NC} $(_cred_tag)"
+                echo -e "  [W${WORKER_ID}] [${_ts}] [${current}/${total_leaves}] [${locality_id}] ${marker} ... ${GREEN}OK${NC}"
                 processed=$((processed + 1))
             else
-                echo -e "  [W${WORKER_ID}] [${_ts}] [${current}/${total_leaves}] [${locality_id}] ${marker} ... ${RED}FAIL${NC} $(_cred_tag)"
+                echo -e "  [W${WORKER_ID}] [${_ts}] [${current}/${total_leaves}] [${locality_id}] ${marker} ... ${RED}FAIL${NC}"
             fi
         fi
         # Leaf endpoint je per-IP rate-limited (~5 zahteva po nepoznatom prozoru).
@@ -1356,8 +1179,13 @@ scrape_locality() {
         if [[ -n "$ROTATE_IP_CMD" ]]; then
             info "Sleep ${LEAF_SLEEP:-0}s"
             sleep "${LEAF_SLEEP:-0}"
+        else
+            sleep 8
         fi
-    done < <(jq -r '.mesta[] as $m | $m.ulice[] as $u | $u.kucniBrojevi[] | "\($m.id)\t\($u.id)\t\(.Value)"' "$tree_file")
+    done < <(
+        jq -r '.mesta[] as $m | $m.ulice[] as $u | $u.kucniBrojevi[] | "\($m.id)\t\($u.id)\t\(.Value)"' "$tree_file" \
+        | { [[ "$RANDOMIZE" == "1" ]] && shuf || cat; }
+    )
 
     success "Lokalitet ${locality_id}: obrađeno ${processed} novih adresa (ukupno gotovih: $(wc -l < "$state_file" | tr -d ' '))"
 }
@@ -1402,10 +1230,6 @@ worker_init() {
     DEBUG_LOG="${OUTPUT_DIR}/debug_worker_${key}.log"
     mkdir -p "$TMP_DIR"
     [[ "$DEBUG" == "1" ]] && info "DEBUG=1: pišem u $DEBUG_LOG"
-    # Workeri u paralelnom modu ne smeju svi da startuju na istom kredencijalu,
-    # inače bi prvi krug leaf-ova svi tukli isti par. WORKER_ID je 1..N (paralelno)
-    # ili prazno (sekvencijalno) — `${WORKER_ID:-1}-1` daje 0..N-1 odnosno 0.
-    CRED_IDX=$(( ( ${WORKER_ID:-1} - 1 ) % ${#CRED_JMBGS[@]} ))
     # NAMERNO ne postavljamo EXIT trap ovde:
     #   - U PARALLEL=1 modu worker_init se zove u glavnom procesu, pa bi EXIT
     #     trap pregazio main-ov koji čisti queue/lock i sve worker_${$}_* dirove.
@@ -1488,6 +1312,7 @@ main() {
     for arg in "$@"; do
         case "$arg" in
             --trees-only) TREES_ONLY=1 ;;
+            --randomize)  RANDOMIZE=1 ;;
             *)            filter_ids+=("$arg") ;;
         esac
     done

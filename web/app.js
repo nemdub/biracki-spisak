@@ -101,7 +101,7 @@ function updateCoverage() {
 
 // ---------- Locality picker ----------
 function renderLocalityList() {
-  const q = document.getElementById("localitySearch").value.trim().toLowerCase();
+  const q = normalizeText(document.getElementById("localitySearch").value.trim());
   const onlyProc = document.getElementById("onlyProcessed").checked;
   const ul = document.getElementById("localityList");
   ul.innerHTML = "";
@@ -110,7 +110,7 @@ function renderLocalityList() {
   for (const loc of state.localities) {
     const isProc = state.processed.has(loc.id);
     if (onlyProc && !isProc) continue;
-    if (q && !loc.name.toLowerCase().includes(q)) continue;
+    if (q && !normalizeText(loc.name).includes(q)) continue;
 
     const li = document.createElement("li");
     li.textContent = loc.name;

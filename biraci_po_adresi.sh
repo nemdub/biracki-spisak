@@ -1180,7 +1180,7 @@ scrape_locality() {
             info "Sleep ${LEAF_SLEEP:-0}s"
             sleep "${LEAF_SLEEP:-0}"
         else
-            sleep 8
+            sleep 10
         fi
     done < <(
         jq -r '.mesta[] as $m | $m.ulice[] as $u | $u.kucniBrojevi[] | "\($m.id)\t\($u.id)\t\(.Value)"' "$tree_file" \

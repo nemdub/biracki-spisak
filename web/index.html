@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Бирачи по адреси — преглед</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header>
+    <h1>Бирачи по адреси</h1>
+    <div id="coverage" class="coverage">Учитавање…</div>
+  </header>
+
+  <main>
+    <aside id="sidebar">
+      <div class="picker-controls">
+        <input type="search" id="localitySearch" placeholder="Претражи локалитет…" autocomplete="off">
+        <label class="toggle">
+          <input type="checkbox" id="onlyProcessed"> Само обрађени
+        </label>
+      </div>
+      <ul id="localityList" class="locality-list"></ul>
+    </aside>
+
+    <section id="content">
+      <div id="placeholder" class="placeholder">Изаберите локалитет са леве стране.</div>
+
+      <div id="tableView" hidden>
+        <div class="table-header">
+          <h2 id="localityTitle"></h2>
+          <div id="localityMeta" class="meta"></div>
+        </div>
+
+        <div class="filters">
+          <input type="search" id="filterMesto" placeholder="Филтер: место…" autocomplete="off">
+          <input type="search" id="filterUlica" placeholder="Филтер: улица…" autocomplete="off">
+          <span id="rowSummary" class="row-summary"></span>
+        </div>
+
+        <div id="scroller" class="scroller">
+          <table id="dataTable">
+            <thead>
+              <tr id="headRow"></tr>
+            </thead>
+            <tbody id="dataBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="loading" class="loading" hidden>Учитавање података…</div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

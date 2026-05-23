@@ -95,8 +95,11 @@ async function init() {
 }
 
 function updateCoverage() {
+  let rows = 0, stan = 0;
+  for (const p of state.processed.values()) { rows += p.rows || 0; stan += p.stan || 0; }
+  const pct = rows ? (stan / rows * 100) : 0;
   document.getElementById("coverage").textContent =
-    `Обрађено: ${state.processed.size} / ${state.localities.length} локалитета`;
+    `Обрађено: ${state.processed.size} / ${state.localities.length} локалитета · Са станом: ${pct.toFixed(1)}%`;
 }
 
 // ---------- Locality picker ----------
@@ -162,11 +165,15 @@ async function selectLocality(loc) {
 function setupTable(loc) {
   document.getElementById("localityTitle").textContent = loc.name;
   const opstina = state.allRows.length ? state.allRows[0].Opstina : "";
-  let maxTs = 0;
-  for (const r of state.allRows) { const t = +r.Timestamp; if (t > maxTs) maxTs = t; }
+  let maxTs = 0, withStan = 0;
+  for (const r of state.allRows) {
+    const t = +r.Timestamp; if (t > maxTs) maxTs = t;
+    if (r.Stan && r.Stan.trim() !== "") withStan++;
+  }
   const dateStr = maxTs ? new Date(maxTs * 1000).toLocaleDateString("sr") : "—";
+  const stanPct = state.allRows.length ? (withStan / state.allRows.length * 100) : 0;
   document.getElementById("localityMeta").textContent =
-    `Општина: ${opstina} · ID: ${loc.id} · Адреса: ${state.allRows.length.toLocaleString("sr")} · Ажурирано: ${dateStr}`;
+    `Општина: ${opstina} · ID: ${loc.id} · Адреса: ${state.allRows.length.toLocaleString("sr")} · Са станом: ${stanPct.toFixed(1)}% · Ажурирано: ${dateStr}`;
 
   const headRow = document.getElementById("headRow");
   headRow.innerHTML = "";

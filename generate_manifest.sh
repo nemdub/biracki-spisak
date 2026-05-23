@@ -16,10 +16,10 @@ for f in "$DEST_DIR/$PREFIX"*.csv; do
   id="${base#"$PREFIX"}"
   id="${id%.csv}"
   [[ "$id" =~ ^[0-9]+$ ]] || continue
-  # data rows = total lines minus header
-  lines="$(wc -l < "$f" | tr -d ' ')"
-  rows=$(( lines > 0 ? lines - 1 : 0 ))
-  entries+=("{\"id\":$id,\"rows\":$rows}")
+  # data rows = total lines minus header; stan = rows with a non-empty Stan field (7th column).
+  # Fields are quoted, so splitting on the "," separator keeps interior values clean.
+  read -r rows stan < <(awk -F'","' 'NR>1 { t++; if ($7 != "") s++ } END { print (t+0), (s+0) }' "$f")
+  entries+=("{\"id\":$id,\"rows\":$rows,\"stan\":$stan}")
 done
 
 mkdir -p "$(dirname "$OUT_FILE")"

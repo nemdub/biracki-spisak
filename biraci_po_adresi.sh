@@ -44,11 +44,6 @@
 #                 preskače skupljanje birača po adresama. Komponuje se sa
 #                 REFRESH_TREE=1 (force rebuild), PARALLEL=N (paralelna gradnja
 #                 stabala) i listom lokaliteta.
-#   --randomize:  obrađuje leaf adrese unutar svakog lokaliteta nasumičnim
-#                 redosledom (mesta/ulice/kućni brojevi se mešaju pre obrade).
-#                 Redosled lokaliteta ostaje FIFO iz reda. Korisno za
-#                 de-klumping retry-ja nakon rate-limit cooldown-a i kad više
-#                 workera deli isti IP.
 # ============================================================================
 
 set -e
@@ -1179,12 +1174,9 @@ scrape_locality() {
         if [[ -n "$ROTATE_IP_CMD" ]]; then
             info "Sleep ${LEAF_SLEEP:-0}s"
             sleep "${LEAF_SLEEP:-0}"
-        else
-            sleep 10
         fi
     done < <(
-        jq -r '.mesta[] as $m | $m.ulice[] as $u | $u.kucniBrojevi[] | "\($m.id)\t\($u.id)\t\(.Value)"' "$tree_file" \
-        | { [[ "$RANDOMIZE" == "1" ]] && shuf || cat; }
+        jq -r '.mesta[] as $m | $m.ulice[] as $u | $u.kucniBrojevi[] | "\($m.id)\t\($u.id)\t\(.Value)"' "$tree_file"
     )
 
     success "Lokalitet ${locality_id}: obrađeno ${processed} novih adresa (ukupno gotovih: $(wc -l < "$state_file" | tr -d ' '))"
@@ -1312,7 +1304,6 @@ main() {
     for arg in "$@"; do
         case "$arg" in
             --trees-only) TREES_ONLY=1 ;;
-            --randomize)  RANDOMIZE=1 ;;
             *)            filter_ids+=("$arg") ;;
         esac
     done

@@ -10,8 +10,14 @@
 # Izvor podataka: https://upit.birackispisak.gov.rs/PretragaBiracaPoAdresi
 #
 # Konfiguracija preko environment varijabli:
-#   JMBG          - 13-cifreni JMBG (obavezno)
-#   DOCUMENT_ID   - broj lične karte (obavezno)
+#   CREDENTIALS_FILE - opciono, putanja do fajla sa više JMBG,DOCUMENT_ID parova
+#                      (jedan po liniji, "JMBG,DOCUMENT_ID"; # i prazne linije
+#                      se ignorišu). Ako je postavljeno, skripta rotira kroz
+#                      parove round-robin: jedan par po leaf upitu, po tree-buildu
+#                      i po retry-u. Bez ovog, koristi se JMBG/DOCUMENT_ID kao
+#                      jedinstveni par.
+#   JMBG          - 13-cifreni JMBG (obavezno ako CREDENTIALS_FILE nije set)
+#   DOCUMENT_ID   - broj lične karte (obavezno ako CREDENTIALS_FILE nije set)
 #   MAX_LOCALITIES - opciono, ograničava broj lokaliteta za obradu
 #   REFRESH_TREE  - opciono, ako je "1" ponovo gradi stablo lokaliteta
 #   LEAF_SLEEP    - opciono, sekunde između leaf zahteva (default 0 sa rotacijom,
@@ -106,6 +112,17 @@ CSV_HEADER='"LokalitetId","Opstina","Mesto","Ulica","KucniBroj","Sprat","Stan","
 # DEBUG_LOG se postavlja per-worker u worker_init (output/debug_worker_<pid>.log)
 # da paralelni >> appendi ne bi razbijali jedan zajednički log.
 DEBUG_LOG=""
+
+# Pool kredencijala: paralelni arrays popunjeni iz CREDENTIALS_FILE ili iz
+# pojedinačnih JMBG/DOCUMENT_ID env varijabli (one-entry fallback). CRED_IDX
+# je per-worker pokazivač u pool — u PARALLEL>1 modu svaki worker je subshell
+# i ima sopstveni CRED_IDX (i sopstvene JMBG/DOCUMENT_ID), pa nema deljenja
+# preko procesnih granica. CRED_LAST_IDX čuva poslednji izabrani indeks (za
+# _cred_tag log poruke).
+CRED_JMBGS=()
+CRED_DOCS=()
+CRED_IDX=0
+CRED_LAST_IDX=0
 
 # U paralelnom modu, svaka log linija dobija [W#] prefiks da bi se output od
 # različitih workera lako razdvajao. WORKER_ID se postavlja u worker_init samo
@@ -217,11 +234,68 @@ setup_directories() {
     rm -f "$STOP_FLAG_FILE"
 }
 
-# Validira JMBG / DOCUMENT_ID env varijable. JMBG mora biti 13 cifara,
-# DOCUMENT_ID ne sme biti prazan.
+# Učitava pool kredencijala u CRED_JMBGS / CRED_DOCS. Ako je CREDENTIALS_FILE
+# postavljen — parsira fajl (jedan "JMBG,DOCUMENT_ID" par po liniji, # i prazne
+# linije se ignorišu). Inače — uzima JMBG/DOCUMENT_ID env varijable kao
+# jedinstveni par (backwards-compat). Validacija je ista u oba slučaja:
+# JMBG mora biti 13 cifara, DOCUMENT_ID ne sme biti prazan.
 load_credentials() {
+    CRED_JMBGS=()
+    CRED_DOCS=()
+    local invalid=0
+
+    if [[ -n "$CREDENTIALS_FILE" ]]; then
+        if [[ ! -f "$CREDENTIALS_FILE" ]]; then
+            error "CREDENTIALS_FILE ne postoji: $CREDENTIALS_FILE"
+            exit 1
+        fi
+        local lineno=0 raw jmbg doc
+        while IFS= read -r raw || [[ -n "$raw" ]]; do
+            lineno=$((lineno + 1))
+            raw="${raw%$'\r'}"
+            raw="${raw#"${raw%%[![:space:]]*}"}"
+            raw="${raw%"${raw##*[![:space:]]}"}"
+            [[ -z "$raw" ]] && continue
+            [[ "$raw" == \#* ]] && continue
+            jmbg="${raw%%,*}"
+            doc="${raw#*,}"
+            if [[ "$doc" == "$raw" ]]; then
+                warn "CREDENTIALS_FILE linija ${lineno}: nema zareza, preskačem"
+                invalid=$((invalid + 1))
+                continue
+            fi
+            jmbg="${jmbg#"${jmbg%%[![:space:]]*}"}"
+            jmbg="${jmbg%"${jmbg##*[![:space:]]}"}"
+            doc="${doc#"${doc%%[![:space:]]*}"}"
+            doc="${doc%"${doc##*[![:space:]]}"}"
+            if [[ ! "$jmbg" =~ ^[0-9]{13}$ ]]; then
+                warn "CREDENTIALS_FILE linija ${lineno}: JMBG '${jmbg}' nije 13 cifara, preskačem"
+                invalid=$((invalid + 1))
+                continue
+            fi
+            if [[ -z "$doc" ]]; then
+                warn "CREDENTIALS_FILE linija ${lineno}: prazan DOCUMENT_ID, preskačem"
+                invalid=$((invalid + 1))
+                continue
+            fi
+            CRED_JMBGS+=("$jmbg")
+            CRED_DOCS+=("$doc")
+        done < "$CREDENTIALS_FILE"
+
+        if (( ${#CRED_JMBGS[@]} == 0 )); then
+            error "CREDENTIALS_FILE (${CREDENTIALS_FILE}) ne sadrži nijedan validan par"
+            exit 1
+        fi
+        if (( invalid > 0 )); then
+            warn "CREDENTIALS_FILE: ${invalid} linija preskočeno, ${#CRED_JMBGS[@]} validnih parova učitano"
+        else
+            info "Učitano ${#CRED_JMBGS[@]} kredencijalnih parova iz ${CREDENTIALS_FILE}"
+        fi
+        return 0
+    fi
+
     if [[ -z "$JMBG" ]]; then
-        error "Nedostaje JMBG (postavi environment varijablu JMBG)"
+        error "Nedostaje JMBG (postavi environment varijablu JMBG ili CREDENTIALS_FILE)"
         exit 1
     fi
     if [[ ! "$JMBG" =~ ^[0-9]{13}$ ]]; then
@@ -229,9 +303,28 @@ load_credentials() {
         exit 1
     fi
     if [[ -z "$DOCUMENT_ID" ]]; then
-        error "Nedostaje DOCUMENT_ID (postavi environment varijablu DOCUMENT_ID)"
+        error "Nedostaje DOCUMENT_ID (postavi environment varijablu DOCUMENT_ID ili CREDENTIALS_FILE)"
         exit 1
     fi
+    CRED_JMBGS+=("$JMBG")
+    CRED_DOCS+=("$DOCUMENT_ID")
+}
+
+# Postavlja globalne JMBG / DOCUMENT_ID na sledeći par iz pool-a (round-robin)
+# i pomera CRED_IDX. CRED_LAST_IDX čuva izabrani indeks (0-based) za _cred_tag.
+# Bezbedno za PARALLEL>1: svaki worker je subshell pa ima sopstveni CRED_IDX i
+# JMBG/DOCUMENT_ID — nema deljenja preko procesnih granica.
+rotate_credentials() {
+    local n=${#CRED_JMBGS[@]}
+    CRED_LAST_IDX=$CRED_IDX
+    JMBG="${CRED_JMBGS[$CRED_IDX]}"
+    DOCUMENT_ID="${CRED_DOCS[$CRED_IDX]}"
+    CRED_IDX=$(( (CRED_IDX + 1) % n ))
+}
+
+# Kratak human-friendly tag za log poruke, npr. "[cred 2/5]". 1-based brojevi.
+_cred_tag() {
+    printf '[cred %d/%d]' "$((CRED_LAST_IDX + 1))" "${#CRED_JMBGS[@]}"
 }
 
 # ----------------------------------------------------------------------------
@@ -709,9 +802,10 @@ load_or_build_tree() {
         # Jedan init_session po lokalitetu, pa svi dropdown sub-zahtevi
         # (mesta/ulice/kućni brojevi) koriste istu sesiju.
         [[ -f "$STOP_FLAG_FILE" ]] && return 1
-        warn "Tree-build za lokalitet ${locality_id}: ${rebuild_reason}"
+        rotate_credentials
+        warn "Tree-build za lokalitet ${locality_id}: ${rebuild_reason} $(_cred_tag)"
         if ! init_session; then
-            error "init_session pao za tree-build lokaliteta ${locality_id}"
+            error "init_session pao za tree-build lokaliteta ${locality_id} $(_cred_tag)"
             return 1
         fi
         build_tree "$locality_id" || return 1
@@ -798,8 +892,25 @@ fetch_and_write_address() {
     # form-tokena posle jednog uspešnog leaf-a — vraća 200 sa
     # {"redirect":"/BiraciPoAdresi"} — pa nema smisla štedeti na inicijalizaciji.
     [[ -f "$STOP_FLAG_FILE" ]] && return 1
-    if ! init_session; then
-        warn "init_session pao za ${marker}, preskačem"
+    # Probaj init_session redom kroz kredencijale: ako tekući par ne uspe da
+    # inicira sesiju (npr. iscrpljen / rate-limited / odbijen), rotiraj na
+    # sledeći par i probaj ponovo. Skip tek kad svih N parova padne u jednom
+    # prolazu — tako jedan loš kredencijal ne obara ceo leaf.
+    local init_try=0
+    local init_max=${#CRED_JMBGS[@]}
+    local init_ok=0
+    while (( init_try < init_max )); do
+        [[ -f "$STOP_FLAG_FILE" ]] && return 1
+        rotate_credentials
+        init_try=$((init_try + 1))
+        if init_session; then
+            init_ok=1
+            break
+        fi
+        warn "init_session pao za ${marker} $(_cred_tag), probam sledeći kredencijal"
+    done
+    if (( init_ok != 1 )); then
+        warn "init_session pao za svih ${init_max} kredencijala za ${marker}, preskačem"
         return 1
     fi
 
@@ -817,19 +928,23 @@ fetch_and_write_address() {
     while [[ ( "$http_code" == "429" || "$http_code" == "redirect" ) && $attempt -lt 5 ]]; do
         [[ -f "$STOP_FLAG_FILE" ]] && return 1
         attempt=$((attempt + 1))
+        # Svaki retry koristi sledeći kredencijalni par iz pool-a — ako je tekući
+        # par credential-side rate-limited, sledeći može da prođe. Rotiramo pre
+        # warn-a da log poruka može da kaže koji par sledi.
+        rotate_credentials
         if [[ -n "$ROTATE_IP_CMD" ]]; then
-            warn "${http_code} za ${marker}, rotiram IP (pokušaj #${attempt})"
+            warn "${http_code} za ${marker}, rotiram IP (pokušaj #${attempt}, $(_cred_tag))"
             if ! eval "$ROTATE_IP_CMD"; then
                 warn "ROTATE_IP_CMD vratio grešku (nastavljam svejedno)"
             fi
             sleep 3
         else
             local wait_s=$((BACKOFF_BASE * attempt))
-            warn "${http_code} za ${marker}, čekam ${wait_s}s (pokušaj #${attempt})"
+            warn "${http_code} za ${marker}, čekam ${wait_s}s (pokušaj #${attempt}, $(_cred_tag))"
             sleep $wait_s
         fi
         if ! init_session; then
-            warn "init_session pao u retry-u za ${marker}"
+            warn "init_session pao u retry-u za ${marker} $(_cred_tag)"
             continue
         fi
         http_code=$(do_leaf_request "$locality_id" "$mesto_id" "$ulica_id" "$kucni_id" "$response_file")
@@ -1152,21 +1267,23 @@ scrape_locality() {
         # Sekvencijalni mod: printf bez \n + odvojeni echo na istoj liniji.
         # Paralelni mod: skupimo sve u jedan echo da različiti workeri ne bi
         # mešali "head ... " i "OK"/"FAIL" delove iste linije.
+        # _cred_tag reflektuje POSLEDNJI iskorišćeni par (uključujući retry
+        # rotacije), pa OK/FAIL linija pokazuje par koji je zaista pogodio server.
         if [[ -z "$WORKER_ID" ]]; then
             printf "  [%s] [%d/%d] %s ... " "$(date +%H:%M:%S)" "$current" "$total_leaves" "$marker"
             if fetch_and_write_address "$locality_id" "$mesto_id" "$ulica_id" "$kucni_id" "$csv_file" "$state_file"; then
-                echo -e "${GREEN}OK${NC}"
+                echo -e "${GREEN}OK${NC} $(_cred_tag)"
                 processed=$((processed + 1))
             else
-                echo -e "${RED}FAIL${NC}"
+                echo -e "${RED}FAIL${NC} $(_cred_tag)"
             fi
         else
             local _ts="$(date +%H:%M:%S)"
             if fetch_and_write_address "$locality_id" "$mesto_id" "$ulica_id" "$kucni_id" "$csv_file" "$state_file"; then
-                echo -e "  [W${WORKER_ID}] [${_ts}] [${current}/${total_leaves}] [${locality_id}] ${marker} ... ${GREEN}OK${NC}"
+                echo -e "  [W${WORKER_ID}] [${_ts}] [${current}/${total_leaves}] [${locality_id}] ${marker} ... ${GREEN}OK${NC} $(_cred_tag)"
                 processed=$((processed + 1))
             else
-                echo -e "  [W${WORKER_ID}] [${_ts}] [${current}/${total_leaves}] [${locality_id}] ${marker} ... ${RED}FAIL${NC}"
+                echo -e "  [W${WORKER_ID}] [${_ts}] [${current}/${total_leaves}] [${locality_id}] ${marker} ... ${RED}FAIL${NC} $(_cred_tag)"
             fi
         fi
         # Leaf endpoint je per-IP rate-limited (~5 zahteva po nepoznatom prozoru).
@@ -1222,6 +1339,10 @@ worker_init() {
     DEBUG_LOG="${OUTPUT_DIR}/debug_worker_${key}.log"
     mkdir -p "$TMP_DIR"
     [[ "$DEBUG" == "1" ]] && info "DEBUG=1: pišem u $DEBUG_LOG"
+    # Workeri u paralelnom modu ne smeju svi da startuju na istom kredencijalu,
+    # inače bi prvi krug leaf-ova svi tukli isti par. WORKER_ID je 1..N (paralelno)
+    # ili prazno (sekvencijalno) — `${WORKER_ID:-1}-1` daje 0..N-1 odnosno 0.
+    CRED_IDX=$(( ( ${WORKER_ID:-1} - 1 ) % ${#CRED_JMBGS[@]} ))
     # NAMERNO ne postavljamo EXIT trap ovde:
     #   - U PARALLEL=1 modu worker_init se zove u glavnom procesu, pa bi EXIT
     #     trap pregazio main-ov koji čisti queue/lock i sve worker_${$}_* dirove.

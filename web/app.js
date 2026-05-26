@@ -95,11 +95,13 @@ async function init() {
 }
 
 function updateCoverage() {
-  let rows = 0, stan = 0;
-  for (const p of state.processed.values()) { rows += p.rows || 0; stan += p.stan || 0; }
+  let rows = 0, stan = 0, preb = 0, borav = 0;
+  for (const p of state.processed.values()) {
+    rows += p.rows || 0; stan += p.stan || 0; preb += p.preb || 0; borav += p.borav || 0;
+  }
   const pct = rows ? (stan / rows * 100) : 0;
   document.getElementById("coverage").textContent =
-    `Обрађено: ${state.processed.size} / ${state.localities.length} локалитета · Са станом: ${pct.toFixed(1)}%`;
+    `Обрађено: ${state.processed.size} / ${state.localities.length} локалитета · Са станом: ${pct.toFixed(1)}% · Σ пребивалиште ${preb.toLocaleString("sr")} · Σ боравиште ${borav.toLocaleString("sr")}`;
 }
 
 // ---------- Locality picker ----------

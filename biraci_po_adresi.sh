@@ -42,6 +42,17 @@
 #                   NAPOMENA: PARALLEL>1 sa ROTATE_IP_CMD je problematično — workeri
 #                   se međusobno ometaju oko jedne IP rotacije. Sa jednim IP-om i
 #                   PARALLEL>1 očekuj brže 429-ove jer dele rate-limit budžet.
+#   CRED_FAILURE_THRESHOLD - opciono, broj UZASTOPNIH neuspeha (429/redirect/
+#                   unavailable/init fail) za isti kredencijal pre nego što se
+#                   zaledi (default 3). Brojanje je deljeno među svim workerima i
+#                   instancama preko output/state/cred_cooldown.txt. Uspešan leaf
+#                   resetuje brojač. NB: 429 je per-IP limit (ne per-kredencijal),
+#                   pa sa jednim IP-om / bez ROTATE_IP_CMD podigni prag da burst
+#                   429-ova ne zaledi zdrav kredencijal.
+#   CRED_COOLDOWN_SECONDS - opciono, trajanje cooldown-a u sekundama (default
+#                   10800 = 3h). Zaleđen kredencijal se preskače pri izboru dok ne
+#                   istekne. Kad su SVI kredencijali zaleđeni, worker čeka da
+#                   najskoriji istekne (uz proveru stop-flag-a) pa nastavlja.
 #
 # Opcionalni pozicioni argumenti:
 #   ./biraci_po_adresi.sh [--trees-only] [lokalitet_id ...]
@@ -107,6 +118,16 @@ QUEUE_LOCK_DIR="${TMP_DIR_BASE}/queue.lock.d"
 # podaci koji se ne menjaju često — opstaju i kad korisnik obriše output/.
 CACHE_DIR="./data/cache"
 STATE_DIR="./output/state"
+# Deljeni cooldown za kredencijale: kad isti par napravi CRED_FAILURE_THRESHOLD
+# uzastopnih neuspeha (429/redirect/unavailable/init fail), zaledi se na
+# CRED_COOLDOWN_SECONDS i preskače se pri izboru. Fajl je na fiksnoj putanji u
+# STATE_DIR pa ga dele SVI workeri u jednoj instanci I sve istovremeno pokrenute
+# instance na istom računaru; preživi restart unutar cooldown prozora. Lock je
+# mkdir-bazovan (isti obrazac kao QUEUE_LOCK_DIR / pop_locality).
+COOLDOWN_FILE="${STATE_DIR}/cred_cooldown.txt"
+COOLDOWN_LOCK_DIR="${STATE_DIR}/cred_cooldown.lock.d"
+CRED_COOLDOWN_SECONDS="${CRED_COOLDOWN_SECONDS:-21600}"
+CRED_FAILURE_THRESHOLD="${CRED_FAILURE_THRESHOLD:-3}"
 COMBINED_CSV="${OUTPUT_DIR}/biraci_po_adresi_svi.csv"
 CSV_HEADER='"LokalitetId","Opstina","Mesto","Ulica","KucniBroj","Sprat","Stan","BiracaPrebivaliste","BiracaBoraviste","Timestamp"'
 # DEBUG_LOG se postavlja per-worker u worker_init (output/debug_worker_<pid>.log)
@@ -128,7 +149,7 @@ CRED_LAST_IDX=0
 # različitih workera lako razdvajao. WORKER_ID se postavlja u worker_init samo
 # kad PARALLEL>1 (vidi main); u sekvencijalnom modu prefix se ne pojavljuje pa
 # log izgleda identično kao pre.
-_log_prefix() { [[ -n "$WORKER_ID" ]] && printf '[W%s] ' "$WORKER_ID"; }
+_log_prefix() { printf '[%s] ' "$(date '+%Y-%m-%d %H:%M:%S')"; [[ -n "$WORKER_ID" ]] && printf '[W%s] ' "$WORKER_ID"; }
 info()    { echo -e "${CYAN}ℹ${NC} $(_log_prefix)$1" 1>&2; }
 success() { echo -e "${GREEN}✓${NC} $(_log_prefix)$1" 1>&2; }
 warn()    { echo -e "${YELLOW}⚠${NC} $(_log_prefix)$1" 1>&2; }
@@ -310,16 +331,155 @@ load_credentials() {
     CRED_DOCS+=("$DOCUMENT_ID")
 }
 
-# Postavlja globalne JMBG / DOCUMENT_ID na sledeći par iz pool-a (round-robin)
-# i pomera CRED_IDX. CRED_LAST_IDX čuva izabrani indeks (0-based) za _cred_tag.
-# Bezbedno za PARALLEL>1: svaki worker je subshell pa ima sopstveni CRED_IDX i
-# JMBG/DOCUMENT_ID — nema deljenja preko procesnih granica.
-rotate_credentials() {
+# ----------------------------------------------------------------------------
+# Deljeni cooldown kredencijala (output/state/cred_cooldown.txt)
+# ----------------------------------------------------------------------------
+# Format: jedna linija po kredencijalu sa stanjem —
+#   <JMBG>\t<broj_uzastopnih_neuspeha>\t<ban_until_epoch>
+# ban_until_epoch == 0 -> nije zaleđen, samo nosi brojač neuspeha.
+# Cooldown je aktivan iff ban_until_epoch > sada. Brojanje je GLOBALNO po
+# kredencijalu (deljeno među workerima i instancama): neuspesi iz bilo kog
+# workera se sabiraju, uspešan leaf iz bilo kog workera resetuje brojač.
+#
+# Read-modify-write ide pod mkdir-lock-om (COOLDOWN_LOCK_DIR), isti spin/force
+# obrazac kao pop_locality. Jeftina read-only provera (cred_in_cooldown) čita
+# bez lock-a — best-effort, u skladu sa ostalim lock-free čitanjima u skripti.
+_now_epoch() { date +%s; }
+
+_cooldown_lock() {
+    local attempts=0
+    local -r max_attempts=600   # 600 * 0.1s = 60s
+    while ! mkdir "$COOLDOWN_LOCK_DIR" 2>/dev/null; do
+        attempts=$((attempts + 1))
+        if (( attempts >= max_attempts )); then
+            warn "cooldown lock zaglavljen 60s, forsiram"
+            rm -rf "$COOLDOWN_LOCK_DIR"
+            mkdir "$COOLDOWN_LOCK_DIR" 2>/dev/null || true
+            break
+        fi
+        sleep 0.1
+    done
+}
+_cooldown_unlock() { rmdir "$COOLDOWN_LOCK_DIR" 2>/dev/null || true; }
+
+# Vraća 0 ako je kredencijal trenutno zaleđen (ban_until > sada), inače 1.
+cred_in_cooldown() {
+    local jmbg=$1
+    [[ -s "$COOLDOWN_FILE" ]] || return 1
+    local now
+    now=$(_now_epoch)
+    awk -F'\t' -v j="$jmbg" -v now="$now" '
+        $1 == j && ($3 + 0) > now { found = 1 }
+        END { exit(found ? 0 : 1) }
+    ' "$COOLDOWN_FILE"
+}
+
+# Pod lock-om: inkrementira brojač neuspeha za JMBG. Kad dostigne prag, postavlja
+# ban_until = sada + CRED_COOLDOWN_SECONDS i resetuje brojač. Prilikom upisa
+# prunuje istekle/nulte zapise (count==0 i ban_until<=sada).
+cred_record_failure() {
+    local jmbg=$1
+    local now
+    now=$(_now_epoch)
+    _cooldown_lock
+    touch "$COOLDOWN_FILE"   # garantuje da awk ima ulaz i da END radi insert
+    local tmp="${COOLDOWN_FILE}.tmp.$$"
+    local banned=0
+    awk -F'\t' -v j="$jmbg" -v now="$now" \
+        -v thr="$CRED_FAILURE_THRESHOLD" -v dur="$CRED_COOLDOWN_SECONDS" \
+        -v flag="$tmp.banned" '
+        BEGIN { OFS = "\t" }
+        {
+            if ($1 == j) {
+                seen = 1
+                cnt = $2 + 1
+                ban = $3 + 0
+                if (ban <= now && cnt >= thr) { ban = now + dur; cnt = 0; print "1" > flag }
+                if (cnt == 0 && ban <= now) next   # prune
+                print $1, cnt, ban
+            } else {
+                if (($2 + 0) == 0 && ($3 + 0) <= now) next   # prune tuđe istekle
+                print $1, $2, $3
+            }
+        }
+        END {
+            if (!seen) {
+                cnt = 1; ban = 0
+                if (cnt >= thr) { ban = now + dur; cnt = 0; print "1" > flag }
+                if (!(cnt == 0 && ban <= now)) print j, cnt, ban
+            }
+        }
+    ' "$COOLDOWN_FILE" > "$tmp"
+    mv -f "$tmp" "$COOLDOWN_FILE"
+    [[ -f "$tmp.banned" ]] && banned=1 && rm -f "$tmp.banned"
+    _cooldown_unlock
+    if (( banned == 1 )); then
+        warn "Kredencijal JMBG ${jmbg} zaleđen na ${CRED_COOLDOWN_SECONDS}s posle ${CRED_FAILURE_THRESHOLD} uzastopnih grešaka"
+    fi
+}
+
+# Pod lock-om: briše zapis za JMBG (reset brojača + uklanja eventualni istekli
+# ban). Uspešan leaf znači da kredencijal radi, pa krećemo iz čistog stanja.
+cred_record_success() {
+    local jmbg=$1
+    [[ -s "$COOLDOWN_FILE" ]] || return 0
+    local now
+    now=$(_now_epoch)
+    _cooldown_lock
+    local tmp="${COOLDOWN_FILE}.tmp.$$"
+    awk -F'\t' -v j="$jmbg" -v now="$now" '
+        BEGIN { OFS = "\t" }
+        $1 == j { next }
+        ($2 + 0) == 0 && ($3 + 0) <= now { next }   # prune istekle
+        { print $1, $2, $3 }
+    ' "$COOLDOWN_FILE" > "$tmp" 2>/dev/null || : > "$tmp"
+    mv -f "$tmp" "$COOLDOWN_FILE"
+    _cooldown_unlock
+}
+
+# Postavlja globalne JMBG / DOCUMENT_ID na sledeći NE-zaleđeni par iz pool-a
+# (round-robin počev od CRED_IDX) i pomera CRED_IDX. CRED_LAST_IDX čuva izabrani
+# indeks (0-based) za _cred_tag. Kad su SVI parovi zaleđeni, čeka da najskoriji
+# istekne (sleep u koracima od max 60s uz proveru stop-flag-a) pa ponovo proba.
+# Vraća non-zero samo ako je prekinut stop-flag-om.
+select_credential() {
     local n=${#CRED_JMBGS[@]}
-    CRED_LAST_IDX=$CRED_IDX
-    JMBG="${CRED_JMBGS[$CRED_IDX]}"
-    DOCUMENT_ID="${CRED_DOCS[$CRED_IDX]}"
-    CRED_IDX=$(( (CRED_IDX + 1) % n ))
+    while :; do
+        [[ -f "$STOP_FLAG_FILE" ]] && return 1
+        local i idx jmbg
+        for (( i = 0; i < n; i++ )); do
+            idx=$(( (CRED_IDX + i) % n ))
+            jmbg="${CRED_JMBGS[$idx]}"
+            if ! cred_in_cooldown "$jmbg"; then
+                CRED_LAST_IDX=$idx
+                JMBG="$jmbg"
+                DOCUMENT_ID="${CRED_DOCS[$idx]}"
+                CRED_IDX=$(( (idx + 1) % n ))
+                return 0
+            fi
+        done
+        # Svi zaleđeni — nađi najskoriji ban_until SAMO za parove iz ovog pool-a
+        # i čekaj. Cooldown fajl je deljen sa drugim workerima (drugi JMBG-ovi);
+        # bez filtera na naš pool budili bismo se na tuđe thaw-ove dok su naši
+        # i dalje zaleđeni, vrteći "svi zaleđeni" bez ijednog pokušaja.
+        local now soonest wait_s jmbg_set
+        now=$(_now_epoch)
+        jmbg_set=$(printf '%s\n' "${CRED_JMBGS[@]}")
+        soonest=$(awk -F'\t' -v now="$now" -v set="$jmbg_set" '
+            BEGIN { n = split(set, a, "\n"); for (k = 1; k <= n; k++) mine[a[k]] = 1 }
+            ($1 in mine) && ($3 + 0) > now { if (m == 0 || $3 < m) m = $3 }
+            END { print m + 0 }
+        ' "$COOLDOWN_FILE" 2>/dev/null)
+        if [[ -z "$soonest" || "$soonest" -le "$now" ]]; then
+            # Ništa zaleđeno (race: cooldown istekao između provere i ovde) —
+            # vrti ponovo, sledeći prolaz će izabrati par.
+            continue
+        fi
+        wait_s=$(( soonest - now ))
+        (( wait_s > 60 )) && wait_s=60
+        warn "Svi kredencijali zaleđeni, čekam ${wait_s}s da cooldown istekne"
+        sleep "$wait_s"
+    done
 }
 
 # Kratak human-friendly tag za log poruke, npr. "[cred 2/5]". 1-based brojevi.
@@ -802,12 +962,14 @@ load_or_build_tree() {
         # Jedan init_session po lokalitetu, pa svi dropdown sub-zahtevi
         # (mesta/ulice/kućni brojevi) koriste istu sesiju.
         [[ -f "$STOP_FLAG_FILE" ]] && return 1
-        rotate_credentials
+        select_credential || return 1
         warn "Tree-build za lokalitet ${locality_id}: ${rebuild_reason} $(_cred_tag)"
         if ! init_session; then
+            cred_record_failure "$JMBG"
             error "init_session pao za tree-build lokaliteta ${locality_id} $(_cred_tag)"
             return 1
         fi
+        cred_record_success "$JMBG"
         build_tree "$locality_id" || return 1
     else
         info "Koristim keširano stablo: ${tree_file}"
@@ -859,6 +1021,8 @@ do_leaf_request() {
     # (npr. iscrpljen captcha budget). Tretiraj kao retry-vredan otkaz.
     if [[ "$http_code" == "200" ]] && grep -q '"redirect"' "$response_file"; then
         echo "redirect"
+    elif [[ "$http_code" == "200" ]] && grep -q 'СИСТЕМ ЈЕ ТРЕНУТНО НЕДОСТУПАН' "$response_file"; then
+        echo "unavailable"
     else
         echo "$http_code"
     fi
@@ -901,12 +1065,13 @@ fetch_and_write_address() {
     local init_ok=0
     while (( init_try < init_max )); do
         [[ -f "$STOP_FLAG_FILE" ]] && return 1
-        rotate_credentials
+        select_credential || return 1
         init_try=$((init_try + 1))
         if init_session; then
             init_ok=1
             break
         fi
+        cred_record_failure "$JMBG"
         warn "init_session pao za ${marker} $(_cred_tag), probam sledeći kredencijal"
     done
     if (( init_ok != 1 )); then
@@ -920,18 +1085,23 @@ fetch_and_write_address() {
     local response_file="${TMP_DIR}/voters_address.html"
     local http_code
     http_code=$(do_leaf_request "$locality_id" "$mesto_id" "$ulica_id" "$kucni_id" "$response_file")
+    # Prvi leaf neuspeh je sa kredencijalom izabranim u init petlji — zabeleži ga
+    # pre nego što retry petlja izabere sledeći par (sprečava dvostruko brojanje).
+    if [[ "$http_code" == "429" || "$http_code" == "redirect" || "$http_code" == "unavailable" ]]; then
+        cred_record_failure "$JMBG"
+    fi
 
     # Sa fresh sesijom, 429/redirect znači per-IP rate-limit. Ako je dostupna
     # IP rotacija — rotiramo i radimo nov pun init na novom IP-u. Bez nje
     # ostaje samo backoff (koji obično ne pomaže, ali ne pravi štetu).
     local attempt=0
-    while [[ ( "$http_code" == "429" || "$http_code" == "redirect" ) && $attempt -lt 5 ]]; do
+    while [[ ( "$http_code" == "429" || "$http_code" == "redirect" || "$http_code" == "unavailable" ) && $attempt -lt 5 ]]; do
         [[ -f "$STOP_FLAG_FILE" ]] && return 1
         attempt=$((attempt + 1))
-        # Svaki retry koristi sledeći kredencijalni par iz pool-a — ako je tekući
-        # par credential-side rate-limited, sledeći može da prođe. Rotiramo pre
-        # warn-a da log poruka može da kaže koji par sledi.
-        rotate_credentials
+        # Svaki retry koristi sledeći NE-zaleđeni par iz pool-a. Biramo pre warn-a
+        # da log poruka može da kaže koji par sledi. Neuspeh svakog pokušaja
+        # (init ili leaf) beleži se odmah po nastanku za tačan kredencijal.
+        select_credential || return 1
         if [[ -n "$ROTATE_IP_CMD" ]]; then
             warn "${http_code} za ${marker}, rotiram IP (pokušaj #${attempt}, $(_cred_tag))"
             if ! eval "$ROTATE_IP_CMD"; then
@@ -944,16 +1114,24 @@ fetch_and_write_address() {
             sleep $wait_s
         fi
         if ! init_session; then
+            cred_record_failure "$JMBG"
             warn "init_session pao u retry-u za ${marker} $(_cred_tag)"
             continue
         fi
         http_code=$(do_leaf_request "$locality_id" "$mesto_id" "$ulica_id" "$kucni_id" "$response_file")
+        if [[ "$http_code" == "429" || "$http_code" == "redirect" || "$http_code" == "unavailable" ]]; then
+            cred_record_failure "$JMBG"
+        fi
     done
 
     if [[ "$http_code" != "200" ]]; then
         warn "HTTP ${http_code} za ${marker} (svi pokušaji neuspeli)"
         return 1
     fi
+
+    # HTTP 200 = kredencijal trenutno radi; resetuj njegov brojač uzastopnih
+    # neuspeha (zajednički sa ostalim workerima/instancama).
+    cred_record_success "$JMBG"
 
     # Skupi sve <td> ćelije; grupiši po 8.
     local cells=()
@@ -1270,7 +1448,7 @@ scrape_locality() {
         # _cred_tag reflektuje POSLEDNJI iskorišćeni par (uključujući retry
         # rotacije), pa OK/FAIL linija pokazuje par koji je zaista pogodio server.
         if [[ -z "$WORKER_ID" ]]; then
-            printf "  [%s] [%d/%d] %s ... " "$(date +%H:%M:%S)" "$current" "$total_leaves" "$marker"
+            printf "  [%s] [%d/%d] %s ... " "$(date +%Y-%m-%d %H:%M:%S)" "$current" "$total_leaves" "$marker"
             if fetch_and_write_address "$locality_id" "$mesto_id" "$ulica_id" "$kucni_id" "$csv_file" "$state_file"; then
                 echo -e "${GREEN}OK${NC} $(_cred_tag)"
                 processed=$((processed + 1))
@@ -1291,6 +1469,9 @@ scrape_locality() {
         if [[ -n "$ROTATE_IP_CMD" ]]; then
             info "Sleep ${LEAF_SLEEP:-0}s"
             sleep "${LEAF_SLEEP:-0}"
+        else
+            info "Sleep ${LEAF_SLEEP:-1}s"
+            sleep "${LEAF_SLEEP:-1}"
         fi
     done < <(
         jq -r '.mesta[] as $m | $m.ulice[] as $u | $u.kucniBrojevi[] | "\($m.id)\t\($u.id)\t\(.Value)"' "$tree_file"

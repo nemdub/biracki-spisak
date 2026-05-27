@@ -101,7 +101,7 @@ else
 fi
 
 echo
-echo -e "${BOLD}== Trenutno stanje obrade ==${NC}"
+echo -e "${BOLD}== Trenutno stanje obrade ($(date '+%Y-%m-%d %H:%M:%S')) ==${NC}"
 printf "  ${BOLD}Adrese:${NC}     %'d / %'d  (${BOLD}%s%%${NC})\n" "$total_proc" "$total_exp" "$grand_pct"
 printf "  ${BOLD}Lokaliteti:${NC} %d ukupno  ${GREEN}%d DONE${NC}  ${YELLOW}%d WIP${NC}  %d TODO" \
     "$total_loc" "$n_done" "$n_wip" "$n_todo"

@@ -149,7 +149,7 @@ CRED_LAST_IDX=0
 # različitih workera lako razdvajao. WORKER_ID se postavlja u worker_init samo
 # kad PARALLEL>1 (vidi main); u sekvencijalnom modu prefix se ne pojavljuje pa
 # log izgleda identično kao pre.
-_log_prefix() { printf '[%s] ' "$(date '+%Y-%m-%d %H:%M:%S')"; [[ -n "$WORKER_ID" ]] && printf '[W%s] ' "$WORKER_ID"; }
+_log_prefix() { printf '[%s] ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; [[ -n "$WORKER_ID" ]] && printf '[W%s] ' "$WORKER_ID"; }
 info()    { echo -e "${CYAN}ℹ${NC} $(_log_prefix)$1" 1>&2; }
 success() { echo -e "${GREEN}✓${NC} $(_log_prefix)$1" 1>&2; }
 warn()    { echo -e "${YELLOW}⚠${NC} $(_log_prefix)$1" 1>&2; }
@@ -1448,7 +1448,7 @@ scrape_locality() {
         # _cred_tag reflektuje POSLEDNJI iskorišćeni par (uključujući retry
         # rotacije), pa OK/FAIL linija pokazuje par koji je zaista pogodio server.
         if [[ -z "$WORKER_ID" ]]; then
-            printf "  [%s] [%d/%d] %s ... " "$(date +%Y-%m-%d %H:%M:%S)" "$current" "$total_leaves" "$marker"
+            printf "  [%s] [%d/%d] %s ... " "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$current" "$total_leaves" "$marker"
             if fetch_and_write_address "$locality_id" "$mesto_id" "$ulica_id" "$kucni_id" "$csv_file" "$state_file"; then
                 echo -e "${GREEN}OK${NC} $(_cred_tag)"
                 processed=$((processed + 1))

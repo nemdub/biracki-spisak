@@ -94,6 +94,8 @@ main { flex: 1 1 auto; display: flex; min-height: 0; }
   color: var(--muted);
   font-size: 15px;
 }
+/* Direction-aware hint: picker sits to the left on desktop, above on mobile */
+.placeholder::before { content: "Изаберите локалитет са леве стране."; }
 
 #tableView { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
 .table-header h2 { margin: 0 0 2px; font-size: 17px; }
@@ -166,6 +168,8 @@ tbody tr:nth-child(even) td { background: var(--row-alt); }
   }
 
   #content { padding: 12px; }
+
+  .placeholder::before { content: "Изаберите локалитет изнад."; }
 
   .locality-list li { padding: 10px 12px; }
 

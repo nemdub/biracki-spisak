@@ -50,7 +50,7 @@
 #                   pa sa jednim IP-om / bez ROTATE_IP_CMD podigni prag da burst
 #                   429-ova ne zaledi zdrav kredencijal.
 #   CRED_COOLDOWN_SECONDS - opciono, trajanje cooldown-a u sekundama (default
-#                   10800 = 3h). Zaleđen kredencijal se preskače pri izboru dok ne
+#                   7200 = 2h). Zaleđen kredencijal se preskače pri izboru dok ne
 #                   istekne. Kad su SVI kredencijali zaleđeni, worker čeka da
 #                   najskoriji istekne (uz proveru stop-flag-a) pa nastavlja.
 #
@@ -126,7 +126,7 @@ STATE_DIR="./output/state"
 # mkdir-bazovan (isti obrazac kao QUEUE_LOCK_DIR / pop_locality).
 COOLDOWN_FILE="${STATE_DIR}/cred_cooldown.txt"
 COOLDOWN_LOCK_DIR="${STATE_DIR}/cred_cooldown.lock.d"
-CRED_COOLDOWN_SECONDS="${CRED_COOLDOWN_SECONDS:-21600}"
+CRED_COOLDOWN_SECONDS="${CRED_COOLDOWN_SECONDS:-7200}"
 CRED_FAILURE_THRESHOLD="${CRED_FAILURE_THRESHOLD:-3}"
 COMBINED_CSV="${OUTPUT_DIR}/biraci_po_adresi_svi.csv"
 CSV_HEADER='"LokalitetId","Opstina","Mesto","Ulica","KucniBroj","Sprat","Stan","BiracaPrebivaliste","BiracaBoraviste","Timestamp"'

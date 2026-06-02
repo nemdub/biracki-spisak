@@ -155,6 +155,30 @@ success() { echo -e "${GREEN}✓${NC} $(_log_prefix)$1" 1>&2; }
 warn()    { echo -e "${YELLOW}⚠${NC} $(_log_prefix)$1" 1>&2; }
 error()   { echo -e "${RED}✗${NC} $(_log_prefix)$1" 1>&2; }
 
+# Mapira curl exit kod u kratak opis radi čitljivosti debug log-a. HTTP 000 sam
+# po sebi ne kaže ZAŠTO zahtev nije uspeo — exit kod kaže. Posebno je važno
+# razlikovati greške proxy-ja (npr. 97 = handshake na proxy-ju pukao, server
+# nije ni dosegnut) od stvarnih problema sa serverom. Nepoznati kodovi se vraćaju
+# kao "curl error". Vidi `man curl` (EXIT CODES) za pun spisak.
+# Proxy se pominje maskirano ($PROXY_DESC: host:port bez kredencijala) jer debug
+# log završava kopiran/zalepljen drugima — lozinka iz $PROXY ne sme da iscuri.
+PROXY_DESC="${PROXY##*@}"   # odbaci "scheme://user:pass@", ostaje host:port
+[[ -z "$PROXY_DESC" ]] && PROXY_DESC="(no proxy)"
+_curl_rc_desc() {
+    case "$1" in
+        0)  echo "OK" ;;
+        5)  echo "couldn't resolve proxy host ($PROXY_DESC)" ;;
+        6)  echo "couldn't resolve server host" ;;
+        7)  echo "couldn't connect (proxy/server TCP connect failed)" ;;
+        28) echo "operation timed out (--max-time)" ;;
+        35) echo "TLS handshake failed" ;;
+        52) echo "empty reply from server" ;;
+        56) echo "failure receiving network data (connection reset)" ;;
+        97) echo "PROXY handshake error — failed talking to proxy ($PROXY_DESC), server NOT reached" ;;
+        *)  echo "curl error" ;;
+    esac
+}
+
 # Sa DEBUG=1, svaki curl poziv ide kroz wrapper koji upisuje sažet zapis u
 # $DEBUG_LOG: metod + URL, -H headere, parsirane kolačiće iz $COOKIE_JAR-a,
 # --data-urlencode parametre, response headere (-D), i prvih 200 bajtova
@@ -204,8 +228,8 @@ curl_debug() {
     local rc=$?
 
     {
-        printf '\n===== %s %s %s (rc=%s) =====\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$method" "$url" "$rc"
+        printf '\n===== %s %s %s (rc=%s: %s) =====\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$method" "$url" "$rc" "$(_curl_rc_desc "$rc")"
         local h p total
         for h in "${headers[@]}"; do printf '> %s\n' "$h"; done
         [[ -n "$request_cookies" ]] && printf '%s\n' "$request_cookies"

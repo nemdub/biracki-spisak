@@ -33,7 +33,9 @@ function render() {
     `Овај извештај укршта <strong>адресни регистар</strong> (kucni_broj.csv), ` +
     `<strong>јавне објекте</strong> (objekti.csv) и <strong>бираче по адреси</strong>. ` +
     `Сваки јавни објекат је просторно спојен са најближом адресом на којој постоје уписани бирачи ` +
-    `(у радијусу до ${s.max_radius} m). Приказано је <strong>${nf.format(s.poklapanja)}</strong> ` +
+    `(у радијусу до ${s.max_radius} m). Рачунају се само бирачи уписани на <strong>голу адресу зграде</strong> ` +
+    `(без броја стана), пошто objekti.csv не садржи број стана — станари са бројем стана се не рачунају. ` +
+    `Приказано је <strong>${nf.format(s.poklapanja)}</strong> ` +
     `поклапања из ${nf.format(s.lokaliteta_sa_biracima)} обрађена локалитета.`;
 
   renderCards(s);
@@ -54,6 +56,7 @@ function renderCards(s) {
     { cls: "red", num: nf.format(nes.objekata), lbl: `нестамбених објеката (${nf.format(nes.biraca)} бирача)` },
     { cls: "amber", num: nf.format(sta.objekata), lbl: `стамбено-могућих (домови, манастири…) — ${nf.format(sta.biraca)} бирача` },
     { cls: "", num: nf.format(s.visoka_pouzdanost), lbl: `поклапања високе поузданости (≤${s.high_conf_radius} m)` },
+    { cls: "", num: (s.geokodirano_rate != null ? s.geokodirano_rate + "%" : "—"), lbl: `адреса бирача геокодирано (${nf.format(s.geokodirano || 0)} од ${nf.format(s.adresa_sa_biracima || 0)})` },
   ];
   document.getElementById("cards").innerHTML = cards.map((c) =>
     `<div class="card ${c.cls}"><div class="num">${c.num}</div><div class="lbl">${c.lbl}</div></div>`
@@ -86,11 +89,12 @@ function renderBreakdown(id, list, key) {
 
 function renderCaveats(s) {
   const items = [
+    `<strong>Само гола адреса зграде — станари се не рачунају.</strong> Бирачки списак некада уз број зграде носи и број стана; objekti.csv нема број стана. Бирачи са бројем стана су станари и <em>не</em> улазе у поклапање — рачунају се само бирачи уписани на голу адресу (без стана). Тако вртић у згради са становима не постаје поклапање због станара.${s.preskoceno_stan != null ? ` Изостављено ${nf.format(s.preskoceno_stan)} редова са бројем стана.` : ""}`,
     `<strong>Просторно поклапање, не идентитет.</strong> Поклапање значи да се адреса са уписаним бирачима налази у радијусу до ${s.max_radius} m од објекта — растојање је дато по реду. ${nf.format(s.visoka_pouzdanost)} поклапања је на ≤${s.high_conf_radius} m (готово сигурно иста парцела/адреса).`,
     `<strong>Категорија „стамбено-могуће”.</strong> Домови за старе, манастири, ученички/студентски домови и сл. су издвојени јер у њима људи легитимно бораве и гласају — нису знак неправилности.`,
     `<strong>objekti.csv није исцрпан.</strong> Садржи само део јавних објеката; одсуство објекта не значи да га нема.`,
     `<strong>Делимична покривеност бирача.</strong> Обрађено је ${nf.format(s.lokaliteta_sa_biracima)} локалитета; објекти у необрађеним општинама не могу бити спојени.`,
-    `<strong>Геокодирање по адреси.</strong> Адресе бирача се спајају са регистром преко нормализованог кључа (општина/место/улица/број); део адреса се не споји због разлика у запису, па је стварни број поклапања вероватно већи од приказаног.`,
+    `<strong>Геокодирање по адреси.</strong> Адресе бирача се спајају са регистром преко нормализованог кључа (општина/место/улица/број уз уједначавање облика — нпр. „БЕОГРАД-ЗЕМУН”↔„zemun”, „9-Б”↔„9Б”, „ПАЛИЛУЛА (БЕОГРАД)”↔„palilula”). Тренутно се споји ${s.geokodirano_rate != null ? `<strong>${s.geokodirano_rate}%</strong>` : "већина"} адреса са бирачима; остатак су углавном стварне празнине у регистру (нпр. Косово, села без назива улице), па је стварни број поклапања нешто већи од приказаног.`,
   ];
   document.getElementById("caveats").innerHTML = items.map((t) => `<li>${t}</li>`).join("");
 }

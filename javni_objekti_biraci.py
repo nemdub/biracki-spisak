@@ -156,11 +156,18 @@ def build_voter_index():
     index = defaultdict(lambda: [0, 0])  # key -> [preb, borav]
     localities = set()
     rows = 0
+    skipped_stan = 0
     for lid, path in files.items():
         localities.add(lid)
         with open(path, encoding="utf-8", newline="") as f:
             for r in csv.DictReader(f):
                 rows += 1
+                # Бирачи са бројем стана су станари (нпр. „Вука Караџића 21/4”).
+                # objekti.csv нема број стана, па их не рачунамо као поклапање —
+                # рачунамо само бираче уписане на голу адресу зграде (без стана).
+                if (r.get("Stan") or "").strip():
+                    skipped_stan += 1
+                    continue
                 try:
                     preb = int(float(r.get("BiracaPrebivaliste") or 0))
                     borav = int(float(r.get("BiracaBoraviste") or 0))
@@ -171,9 +178,10 @@ def build_voter_index():
                 k = addr_key(r.get("Opstina"), r.get("Mesto"), r.get("Ulica"), r.get("KucniBroj"))
                 index[k][0] += preb
                 index[k][1] += borav
-    log(f"[1] Бирачи: {len(files)} локалитета, {rows} редова, "
-        f"{len(index)} адреса са бирачима.")
-    return dict(index), sorted(localities, key=int)
+    log(f"[1] Бирачи: {len(files)} локалитета, {rows} редова "
+        f"({skipped_stan} прескочено због броја стана), "
+        f"{len(index)} адреса са бирачима (без стана).")
+    return dict(index), sorted(localities, key=int), skipped_stan
 
 
 # --- 2. Геокодирање адреса са бирачима --------------------------------------
@@ -207,7 +215,12 @@ def geocode_voter_addresses(voter_index):
     rate = 100.0 * len(matched_keys) / max(1, len(voter_index))
     log(f"[2] Адресни регистар: {total} редова. Геокодирано "
         f"{len(matched_keys)}/{len(voter_index)} адреса са бирачима ({rate:.1f}%).")
-    return grid
+    geo_stats = {
+        "voter_addresses": len(voter_index),
+        "geocoded": len(matched_keys),
+        "geocode_rate": round(rate, 1),
+    }
+    return grid, geo_stats
 
 
 def nearest_in_grid(grid, x, y):
@@ -228,8 +241,9 @@ def nearest_in_grid(grid, x, y):
 
 # --- 3. + 4. Поклапање објеката и излаз -------------------------------------
 def main():
-    voter_index, localities = build_voter_index()
-    grid = geocode_voter_addresses(voter_index)
+    voter_index, localities, skipped_stan = build_voter_index()
+    grid, geo_stats = geocode_voter_addresses(voter_index)
+    geo_stats["preskoceno_stan"] = skipped_stan
 
     transformer = Transformer.from_crs("EPSG:32634", "EPSG:4326", always_xy=True)
 
@@ -269,7 +283,7 @@ def main():
         f"{len(matches)}.")
 
     write_csv(matches)
-    write_json(matches, localities, objekti_total)
+    write_json(matches, localities, objekti_total, geo_stats)
 
 
 def write_csv(matches):
@@ -286,7 +300,7 @@ def write_csv(matches):
     log(f"[4] CSV: {OUT_CSV} ({len(matches)} редова).")
 
 
-def write_json(matches, localities, objekti_total):
+def write_json(matches, localities, objekti_total, geo_stats):
     by_tip = defaultdict(lambda: {"objekata": 0, "biraca": 0})
     by_opstina = defaultdict(lambda: {"objekata": 0, "biraca": 0})
     by_kat = defaultdict(lambda: {"objekata": 0, "biraca": 0})
@@ -315,6 +329,10 @@ def write_json(matches, localities, objekti_total):
         "max_radius": MAX_RADIUS,
         "high_conf_radius": HIGH_CONF,
         "lokaliteta_sa_biracima": len(localities),
+        "geokodirano_rate": geo_stats.get("geocode_rate"),
+        "geokodirano": geo_stats.get("geocoded"),
+        "adresa_sa_biracima": geo_stats.get("voter_addresses"),
+        "preskoceno_stan": geo_stats.get("preskoceno_stan"),
         "po_kategoriji": {k: v for k, v in by_kat.items()},
         "po_tipu": top(by_tip),
         "po_opstini": top(by_opstina),

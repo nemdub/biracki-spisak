@@ -1,5 +1,7 @@
 "use strict";
 
+const ASSET_V = "20260607d"; // подигни верзију кад се подаци/код промене (руши кеш)
+
 const COLORS = {
   "nestambeno": "#dc2626",
   "stambeno-moguce": "#d97706",
@@ -20,8 +22,8 @@ let cluster = null;
 let PROCESSED = new Set(); // ид-ови локалитета доступних у прегледу (index.html)
 
 Promise.all([
-  fetch("javni_objekti_report.json").then((r) => r.json()),
-  fetch("processed_localities.json").then((r) => (r.ok ? r.json() : [])).catch(() => []),
+  fetch("javni_objekti_report.json?v=" + ASSET_V).then((r) => r.json()),
+  fetch("processed_localities.json?v=" + ASSET_V).then((r) => (r.ok ? r.json() : [])).catch(() => []),
 ])
   .then(([d, proc]) => {
     DATA = d;
@@ -33,14 +35,20 @@ Promise.all([
   });
 
 // Линк ка прегледу бирача (index.html) за тачну адресу — само ако је локалитет обрађен.
-function viewerLink(m) {
+// compact=true: кратко дугме (иконица) за табелу; иначе пуно дугме за искачући прозор.
+function viewerLink(m, compact) {
   if (m.loc == null) return "";
   if (!PROCESSED.has(m.loc)) {
-    return `<span class="popup-note">Локалитет није у прегледу бирача</span>`;
+    return compact
+      ? `<span class="popup-note" title="Локалитет није у прегледу бирача">—</span>`
+      : `<span class="popup-note">Локалитет није у прегледу бирача</span>`;
   }
   const q = `loc=${m.loc}&mesto=${encodeURIComponent(m.vmesto || "")}` +
     `&ulica=${encodeURIComponent(m.vulica || "")}&broj=${encodeURIComponent(m.vbroj || "")}`;
-  return `<a class="popup-btn" href="index.html?${q}" target="_blank" rel="noopener">🔍 Нађи адресу у прегледу</a>`;
+  const cls = compact ? "popup-btn compact" : "popup-btn";
+  const label = compact ? "🔍 Нађи" : "🔍 Нађи адресу у прегледу";
+  const title = compact ? ' title="Нађи адресу у прегледу бирача"' : "";
+  return `<a class="${cls}" href="index.html?${q}" target="_blank" rel="noopener"${title}>${label}</a>`;
 }
 
 function render() {
@@ -94,6 +102,7 @@ function renderTop(matches) {
        <td>${esc(adresa(m))}</td>
        <td class="num">${m.rastojanje_m}</td>
        <td class="num"><b>${nf.format(m.ukupno)}</b></td>
+       <td>${viewerLink(m, true)}</td>
      </tr>`
   ).join("");
   document.getElementById("topBody").innerHTML = rows;
@@ -111,7 +120,7 @@ function renderCaveats(s) {
     `<strong>Просторно поклапање, не идентитет.</strong> Поклапање значи да се адреса са уписаним бирачима налази у радијусу до ${s.max_radius} m од објекта — растојање је дато по реду. ${nf.format(s.visoka_pouzdanost)} поклапања је на ≤${s.high_conf_radius} m (готово сигурно иста парцела/адреса).`,
     `<strong>Категорија „стамбено-могуће”.</strong> Домови за старе, манастири, ученички/студентски домови и сл. су издвојени јер у њима људи легитимно бораве и гласају — нису знак неправилности.`,
     `<strong>objekti.csv није исцрпан.</strong> Садржи само део јавних објеката; одсуство објекта не значи да га нема.`,
-    `<strong>Делимична покривеност бирача.</strong> Обрађено је ${nf.format(s.lokaliteta_sa_biracima)} локалитета; објекти у необрађеним општинама не могу бити спојени.`,
+    `<strong>Делимична покривеност бирача — прикупљање у току.</strong> Обрађено је ${nf.format(s.lokaliteta_sa_biracima)} локалитета са ${nf.format(s.adresa_sa_biracima || 0)} адреса (без станова).${s.ocekivano_adresa ? ` Када се заврши прикупљање бирачких података (засебан процес), очекује се укупно <strong>${nf.format(s.ocekivano_adresa)}</strong> адреса — тренутно је покривено ~${Math.round(100 * (s.adresa_sa_biracima || 0) / s.ocekivano_adresa)}%.` : ""} Објекти у још необрађеним општинама не могу бити спојени, па ће број поклапања растити како прикупљање одмиче.`,
     `<strong>Геокодирање по адреси.</strong> Адресе бирача се спајају са регистром преко нормализованог кључа (општина/место/улица/број уз уједначавање облика — нпр. „БЕОГРАД-ЗЕМУН”↔„zemun”, „9-Б”↔„9Б”, „ПАЛИЛУЛА (БЕОГРАД)”↔„palilula”). Тренутно се споји ${s.geokodirano_rate != null ? `<strong>${s.geokodirano_rate}%</strong>` : "већина"} адреса са бирачима; остатак су углавном стварне празнине у регистру (нпр. Косово, села без назива улице), па је стварни број поклапања нешто већи од приказаног.`,
   ];
   document.getElementById("caveats").innerHTML = items.map((t) => `<li>${t}</li>`).join("");

@@ -6,8 +6,8 @@
   <meta name="robots" content="noindex, nofollow">
   <title>Јавни објекти са уписаним бирачима</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="app.css?v=20260607">
-  <link rel="stylesheet" href="javni_objekti_report.css?v=20260607">
+  <link rel="stylesheet" href="app.css?v=20260607d">
+  <link rel="stylesheet" href="javni_objekti_report.css?v=20260607d">
 </head>
 <body>
   <div class="report">
@@ -36,7 +36,7 @@
       <table>
         <thead><tr>
           <th>Објекат</th><th>Тип</th><th>Адреса</th>
-          <th class="num">Раст. (m)</th><th class="num">Бирача</th>
+          <th class="num">Раст. (m)</th><th class="num">Бирача</th><th></th>
         </tr></thead>
         <tbody id="topBody"></tbody>
       </table>
@@ -67,6 +67,12 @@
     <h2>Преузимање</h2>
     <p class="lead">Комплетна табела свих поклапања: <a href="javni_objekti_sa_biracima.csv" download>javni_objekti_sa_biracima.csv</a></p>
 
+    <h2>Извори података</h2>
+    <ul class="caveats">
+      <li><strong>Адресни регистар и јавни објекти</strong> (kucni_broj.csv, objekti.csv) — <a href="https://download.geosrbija.rs/download/" target="_blank" rel="noopener">download.geosrbija.rs</a></li>
+      <li><strong>Број бирача по адреси</strong> — <a href="https://upit.birackispisak.gov.rs/BiraciPoAdresi" target="_blank" rel="noopener">upit.birackispisak.gov.rs/BiraciPoAdresi</a></li>
+    </ul>
+
     <h2>Методологија и ограничења</h2>
     <ul class="caveats" id="caveats"></ul>
   </div>
@@ -75,6 +81,6 @@
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
-  <script src="javni_objekti_report.js?v=20260607"></script>
+  <script src="javni_objekti_report.js?v=20260607d"></script>
 </body>
 </html>

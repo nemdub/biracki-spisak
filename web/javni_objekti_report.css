@@ -68,7 +68,9 @@ body { display: block; height: auto; min-height: 100vh; overflow-y: auto; }
   border-radius: 6px; font-size: 12.5px; font-weight: 600;
 }
 .popup-btn:hover { background: #1d4ed8; }
+.popup-btn.compact { margin-top: 0; padding: 3px 8px; font-size: 12px; white-space: nowrap; }
 .popup-note { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; font-style: italic; }
+td .popup-note { display: inline; margin-top: 0; }
 
 @media (max-width: 768px) {
   .two-col { grid-template-columns: 1fr; }

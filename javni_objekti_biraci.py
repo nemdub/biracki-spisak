@@ -42,9 +42,13 @@ OUT_CSV = os.path.join(ROOT, "web", "javni_objekti_sa_biracima.csv")
 OUT_JSON = os.path.join(ROOT, "web", "javni_objekti_report.json")
 
 # Просторно поклапање: задржи поклапања до MAX_RADIUS m; band ≤ HIGH_CONF = висока поузданост.
-MAX_RADIUS = 50.0
-HIGH_CONF = 15.0
+MAX_RADIUS = 20.0
+HIGH_CONF = 10.0
 CELL = MAX_RADIUS  # величина ћелије = радијус → довољан је 3x3 блок око упита
+
+# Очекивани укупан број адреса (без бројева станова) кад се заврши прикупљање
+# бирачких података (засебан, текући процес). Користи се као именилац покривености.
+EXPECTED_ADDRESSES = 1374393
 
 # --- Нормализација (исти TRANSLIT као web/app.js) ---------------------------
 TRANSLIT = {
@@ -345,6 +349,7 @@ def write_json(matches, localities, objekti_total, geo_stats):
         "geokodirano_rate": geo_stats.get("geocode_rate"),
         "geokodirano": geo_stats.get("geocoded"),
         "adresa_sa_biracima": geo_stats.get("voter_addresses"),
+        "ocekivano_adresa": EXPECTED_ADDRESSES,
         "preskoceno_stan": geo_stats.get("preskoceno_stan"),
         "po_kategoriji": {k: v for k, v in by_kat.items()},
         "po_tipu": top(by_tip),

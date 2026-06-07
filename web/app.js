@@ -1,5 +1,6 @@
 "use strict";
 
+const ASSET_V = "20260607d"; // подигни верзију кад се подаци/код промене (руши кеш)
 const DATA_BASE = "../data";
 const CSV_DIR = DATA_BASE + "/processed/biraci_po_adresi";
 
@@ -82,8 +83,8 @@ function parseCSV(text) {
 async function init() {
   try {
     const [locs, proc] = await Promise.all([
-      fetch(DATA_BASE + "/localities.json").then(r => r.json()),
-      fetch("processed_localities.json").then(r => r.json()),
+      fetch(DATA_BASE + "/localities.json?v=" + ASSET_V).then(r => r.json()),
+      fetch("processed_localities.json?v=" + ASSET_V).then(r => r.json()),
     ]);
     state.localities = locs.slice().sort((a, b) => collator.compare(a.name, b.name));
     for (const p of proc) state.processed.set(p.id, p);
@@ -178,7 +179,7 @@ async function selectLocality(loc) {
   document.getElementById("loading").hidden = false;
 
   try {
-    const text = await fetch(`${CSV_DIR}/biraci_po_adresi_${loc.id}.csv`).then(r => {
+    const text = await fetch(`${CSV_DIR}/biraci_po_adresi_${loc.id}.csv?v=${ASSET_V}`).then(r => {
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.text();
     });

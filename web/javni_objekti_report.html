@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Јавни објекти са уписаним бирачима</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="javni_objekti_report.css">
+</head>
+<body>
+  <div class="report">
+    <header style="padding:0;border:none;background:none;display:block;">
+      <h1 style="font-size:22px;">Јавни објекти са уписаним бирачима</h1>
+      <p class="lead" id="lead">Учитавање…</p>
+    </header>
+
+    <h2>Сажетак</h2>
+    <div class="cards" id="cards"></div>
+
+    <h2>Мапа</h2>
+    <div class="map-controls">
+      <label><input type="checkbox" id="fltNestambeno"> Само нестамбено</label>
+      <label><input type="checkbox" id="fltHighConf"> Само висока поузданост (≤<span id="hcR">15</span>m)</label>
+      <span style="margin-left:auto;display:flex;gap:14px;">
+        <span><span class="legend-dot nestambeno"></span> нестамбено</span>
+        <span><span class="legend-dot stambeno"></span> стамбено-могуће</span>
+        <span><span class="legend-dot nepoznato"></span> непознато</span>
+      </span>
+    </div>
+    <div id="map"></div>
+
+    <h2>Највећи случајеви по броју бирача</h2>
+    <div class="scroll-table">
+      <table>
+        <thead><tr>
+          <th>Објекат</th><th>Тип</th><th>Адреса</th>
+          <th class="num">Раст. (m)</th><th class="num">Бирача</th>
+        </tr></thead>
+        <tbody id="topBody"></tbody>
+      </table>
+    </div>
+
+    <h2>Рашчламба</h2>
+    <div class="two-col">
+      <div>
+        <h3 style="font-size:14px;color:var(--muted);margin:0 0 8px;">По типу објекта</h3>
+        <div class="scroll-table">
+          <table>
+            <thead><tr><th>Тип</th><th class="num">Објеката</th><th class="num">Бирача</th></tr></thead>
+            <tbody id="tipBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3 style="font-size:14px;color:var(--muted);margin:0 0 8px;">По општини</h3>
+        <div class="scroll-table">
+          <table>
+            <thead><tr><th>Општина</th><th class="num">Објеката</th><th class="num">Бирача</th></tr></thead>
+            <tbody id="opBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <h2>Преузимање</h2>
+    <p class="lead">Комплетна табела свих поклапања: <a href="javni_objekti_sa_biracima.csv" download>javni_objekti_sa_biracima.csv</a></p>
+
+    <h2>Методологија и ограничења</h2>
+    <ul class="caveats" id="caveats"></ul>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+  <script src="javni_objekti_report.js"></script>
+</body>
+</html>

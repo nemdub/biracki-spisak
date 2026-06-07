@@ -1,0 +1,69 @@
+/* Извештај: јавни објекти са уписаним бирачима — допуна на app.css палету. */
+:root {
+  --nestambeno: #dc2626;
+  --stambeno: #d97706;
+  --nepoznato: #6b7280;
+}
+
+body { display: block; height: auto; min-height: 100vh; overflow-y: auto; }
+
+.report { max-width: 1180px; margin: 0 auto; padding: 20px 20px 60px; }
+
+.report h2 { font-size: 18px; margin: 32px 0 12px; }
+.report h2:first-child { margin-top: 8px; }
+.lead { color: var(--muted); font-size: 14px; line-height: 1.55; max-width: 75ch; }
+.lead strong { color: var(--text); }
+
+/* Сажетак — картице */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 16px 0; }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.card .num { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.card .lbl { color: var(--muted); font-size: 12px; margin-top: 4px; line-height: 1.35; }
+.card.red .num { color: var(--nestambeno); }
+.card.amber .num { color: var(--stambeno); }
+.card.blue .num { color: var(--accent); }
+
+/* Мапа */
+.map-controls { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin: 8px 0 10px; font-size: 13px; }
+.map-controls label { display: flex; align-items: center; gap: 6px; color: var(--text); cursor: pointer; }
+.legend-dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+.legend-dot.nestambeno { background: var(--nestambeno); }
+.legend-dot.stambeno { background: var(--stambeno); }
+.legend-dot.nepoznato { background: var(--nepoznato); }
+#map { height: 560px; border: 1px solid var(--border); border-radius: 10px; }
+
+/* Табеле */
+.report table { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.report thead th { cursor: default; position: static; }
+.report thead th:hover { background: var(--panel); }
+.report tbody td { white-space: normal; }
+.report .num { text-align: right; font-variant-numeric: tabular-nums; }
+.tag {
+  display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  color: #fff;
+}
+.tag.nestambeno { background: var(--nestambeno); }
+.tag.stambeno-moguce { background: var(--stambeno); }
+.tag.nepoznato { background: var(--nepoznato); }
+
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+.scroll-table { max-height: 460px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }
+.scroll-table table { border: none; border-radius: 0; }
+.scroll-table thead th { position: sticky; top: 0; z-index: 1; }
+
+.caveats { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 6px 20px; }
+.caveats li { margin: 10px 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.caveats li strong { color: var(--text); }
+
+.leaflet-popup-content { font-size: 13px; line-height: 1.45; }
+.leaflet-popup-content b { font-size: 13.5px; }
+
+@media (max-width: 768px) {
+  .two-col { grid-template-columns: 1fr; }
+  #map { height: 420px; }
+}

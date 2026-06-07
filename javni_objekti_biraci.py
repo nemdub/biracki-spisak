@@ -73,8 +73,9 @@ _paren = re.compile(r"\s*\(.*?\)\s*")
 
 def norm_opstina(o):
     """Уједначи називе општина: 'БЕОГРАД-ЗЕМУН'->'zemun', 'СУБОТИЦА - ГРАД'->'subotica',
-    'ВРАЊЕ-ВРАЊСКА БАЊА'->'vranje'. kucni_broj користи чисте називе (zemun, subotica)."""
-    o = norm(o).replace(" - ", "-").replace(" -", "-").replace("- ", "-")
+    'ВРАЊЕ-ВРАЊСКА БАЊА'->'vranje', 'ПАЛИЛУЛА (БЕОГРАД)'->'palilula'. kucni_broj
+    некад носи град у загради, бирачки списак као префикс — оба своди на чист назив."""
+    o = norm(_paren.sub(" ", str(o or ""))).replace(" - ", "-").replace(" -", "-").replace("- ", "-")
     if not o:
         return o
     parts = o.split("-")
@@ -92,8 +93,18 @@ def norm_naselje(m):
     return norm(_paren.sub(" ", str(m or "")))
 
 
+_brsep = re.compile(r"[-.\s]+")
+
+
+def norm_broj(b):
+    """Кућни број: бирачки списак пише '9-Б', регистар '9Б'. Избаци раздвајаче
+    (цртица/тачка/размак) па се '9-b' и '9b' поклапају. Регистар не користи
+    раздвајаче, па нема ризика од лажног спајања."""
+    return _brsep.sub("", norm(b))
+
+
 def addr_key(opstina, mesto, ulica, broj):
-    return (norm_opstina(opstina), norm_naselje(mesto), norm(ulica), norm(broj))
+    return (norm_opstina(opstina), norm_naselje(mesto), norm(ulica), norm_broj(broj))
 
 
 _point = re.compile(r"POINT\s*\(\s*([-\d.eE]+)\s+([-\d.eE]+)\s*\)")

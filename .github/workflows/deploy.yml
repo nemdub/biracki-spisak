@@ -14,6 +14,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: false   # pull LFS manually below so the 739 MB registry can be cached
+
+      # data/kucni_broj.csv (~739 MB) lives in Git LFS. Cache it across runs so we
+      # don't re-pull it (and burn LFS bandwidth) on every deploy. With lfs:false
+      # the working-tree file is the small LFS pointer, so hashFiles() keys on the
+      # pointer's OID and the cache busts only when the registry actually changes.
+      - name: Cache LFS address registry
+        id: lfs-cache
+        uses: actions/cache@v4
+        with:
+          path: data/kucni_broj.csv
+          key: lfs-kucni-broj-${{ hashFiles('data/kucni_broj.csv') }}
+
+      - name: Pull LFS registry (on cache miss)
+        if: steps.lfs-cache.outputs.cache-hit != 'true'
+        run: git lfs pull --include="data/kucni_broj.csv"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python deps
+        run: pip install pyproj
+
+      # Regenerates web/javni_objekti_report.json and web/javni_objekti_sa_biracima.csv
+      # from kucni_broj.csv + objekti.csv + committed voter data (data/processed/,
+      # 85 localities — same set the viewer serves). output/ is git-ignored so this
+      # run is processed-only by construction.
+      - name: Run address ↔ voter ↔ building matching
+        run: python3 javni_objekti_biraci.py
 
       - name: Generate processed-localities manifest
         run: bash generate_manifest.sh

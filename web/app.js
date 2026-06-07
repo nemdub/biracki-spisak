@@ -89,9 +89,41 @@ async function init() {
     for (const p of proc) state.processed.set(p.id, p);
     updateCoverage();
     renderLocalityList();
+    await handleDeepLink();
   } catch (e) {
     document.getElementById("coverage").textContent = "Грешка при учитавању: " + e.message;
   }
+}
+
+// Дубоки линк из извештаја: ?loc=<ид>&mesto=&ulica=&broj= → отвори локалитет,
+// постави филтере и означи/скролуј до тачног реда адресе.
+async function handleDeepLink() {
+  const p = new URLSearchParams(location.search);
+  const id = +p.get("loc");
+  if (!id) return;
+  const loc = state.localities.find(l => l.id === id);
+  if (!loc || !state.processed.has(id)) return; // локалитет није доступан у прегледу
+  state.target = { mesto: p.get("mesto") || "", ulica: p.get("ulica") || "", broj: p.get("broj") || "" };
+  await selectLocality(loc);
+  document.getElementById("filterMesto").value = state.target.mesto;
+  document.getElementById("filterUlica").value = state.target.ulica;
+  applyFilterSort();
+  requestAnimationFrame(scrollToTarget);
+}
+
+function normBroj(s) { return normalizeText(s).replace(/[-.\s]+/g, ""); }
+
+function scrollToTarget() {
+  const t = state.target;
+  if (!t) return;
+  const tm = normalizeText(t.mesto), tu = normalizeText(t.ulica), tb = normBroj(t.broj);
+  const idx = state.viewRows.findIndex(r =>
+    (!tm || r._nm === tm) && (!tu || r._nu === tu) && (!tb || normBroj(r.KucniBroj) === tb));
+  state.highlightIndex = idx;
+  if (idx < 0) { renderWindow(); return; }
+  const scroller = document.getElementById("scroller");
+  scroller.scrollTop = Math.max(0, idx * state.rowHeight - scroller.clientHeight / 2);
+  renderWindow();
 }
 
 function updateCoverage() {
@@ -138,6 +170,7 @@ async function selectLocality(loc) {
   if (loc.id === state.selectedId) return;
   state.selectedId = loc.id;
   state.sort = { key: null, dir: 1 };
+  state.highlightIndex = -1;
   renderLocalityList();
 
   document.getElementById("placeholder").hidden = true;
@@ -266,7 +299,7 @@ function renderWindow() {
   if (padTop) html += `<tr style="height:${padTop}px"><td colspan="${COLUMNS.length}"></td></tr>`;
   for (let i = start; i < end; i++) {
     const r = state.viewRows[i];
-    html += "<tr>";
+    html += (i === state.highlightIndex) ? '<tr class="hl-row">' : "<tr>";
     for (const col of COLUMNS) {
       const cls = (col.type === "num" || col.type === "house") ? ' class="num"' : "";
       html += `<td${cls}>${escapeHtml(r[col.key])}</td>`;
@@ -295,8 +328,8 @@ function escapeHtml(s) {
 // ---------- Events ----------
 document.getElementById("localitySearch").addEventListener("input", renderLocalityList);
 document.getElementById("onlyProcessed").addEventListener("change", renderLocalityList);
-document.getElementById("filterMesto").addEventListener("input", applyFilterSort);
-document.getElementById("filterUlica").addEventListener("input", applyFilterSort);
+document.getElementById("filterMesto").addEventListener("input", () => { state.highlightIndex = -1; applyFilterSort(); });
+document.getElementById("filterUlica").addEventListener("input", () => { state.highlightIndex = -1; applyFilterSort(); });
 document.getElementById("scroller").addEventListener("scroll", renderWindow);
 
 init();

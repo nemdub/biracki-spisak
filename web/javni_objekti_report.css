@@ -62,6 +62,13 @@ body { display: block; height: auto; min-height: 100vh; overflow-y: auto; }
 
 .leaflet-popup-content { font-size: 13px; line-height: 1.45; }
 .leaflet-popup-content b { font-size: 13.5px; }
+.popup-btn {
+  display: inline-block; margin-top: 8px; padding: 6px 10px;
+  background: var(--accent); color: #fff !important; text-decoration: none;
+  border-radius: 6px; font-size: 12.5px; font-weight: 600;
+}
+.popup-btn:hover { background: #1d4ed8; }
+.popup-note { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; font-style: italic; }
 
 @media (max-width: 768px) {
   .two-col { grid-template-columns: 1fr; }

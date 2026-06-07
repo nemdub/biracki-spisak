@@ -17,13 +17,31 @@ const esc = (s) => String(s == null ? "" : s)
 
 let DATA = null;
 let cluster = null;
+let PROCESSED = new Set(); // ид-ови локалитета доступних у прегледу (index.html)
 
-fetch("javni_objekti_report.json")
-  .then((r) => r.json())
-  .then((d) => { DATA = d; render(); })
+Promise.all([
+  fetch("javni_objekti_report.json").then((r) => r.json()),
+  fetch("processed_localities.json").then((r) => (r.ok ? r.json() : [])).catch(() => []),
+])
+  .then(([d, proc]) => {
+    DATA = d;
+    PROCESSED = new Set((proc || []).map((p) => p.id));
+    render();
+  })
   .catch((e) => {
     document.getElementById("lead").textContent = "Грешка при учитавању података: " + e;
   });
+
+// Линк ка прегледу бирача (index.html) за тачну адресу — само ако је локалитет обрађен.
+function viewerLink(m) {
+  if (m.loc == null) return "";
+  if (!PROCESSED.has(m.loc)) {
+    return `<span class="popup-note">Локалитет није у прегледу бирача</span>`;
+  }
+  const q = `loc=${m.loc}&mesto=${encodeURIComponent(m.vmesto || "")}` +
+    `&ulica=${encodeURIComponent(m.vulica || "")}&broj=${encodeURIComponent(m.vbroj || "")}`;
+  return `<a class="popup-btn" href="index.html?${q}" target="_blank" rel="noopener">🔍 Нађи адресу у прегледу</a>`;
+}
 
 function render() {
   const s = DATA.summary;
@@ -134,7 +152,8 @@ function populate() {
       `${esc(adresa(m))}<br>` +
       `Растојање: ${m.rastojanje_m} m<br>` +
       `Бирача: <b>${nf.format(m.ukupno)}</b> ` +
-      `(преб. ${nf.format(m.preb)}, борав. ${nf.format(m.borav)})`
+      `(преб. ${nf.format(m.preb)}, борав. ${nf.format(m.borav)})` +
+      viewerLink(m)
     );
     markers.push(mk);
   }

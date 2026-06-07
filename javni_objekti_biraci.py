@@ -153,7 +153,9 @@ def build_voter_index():
         if m:
             files[m.group(1)] = path  # прегази output ако постоји processed
 
-    index = defaultdict(lambda: [0, 0])  # key -> [preb, borav]
+    # key -> [preb, borav, lokalitet_id, Mesto, Ulica, KucniBroj] (изворни облик
+    # из бирачког списка — потребан да дугме у извештају отвори тачну адресу у прегледу).
+    index = {}
     localities = set()
     rows = 0
     skipped_stan = 0
@@ -176,8 +178,13 @@ def build_voter_index():
                 if preb == 0 and borav == 0:
                     continue
                 k = addr_key(r.get("Opstina"), r.get("Mesto"), r.get("Ulica"), r.get("KucniBroj"))
-                index[k][0] += preb
-                index[k][1] += borav
+                ent = index.get(k)
+                if ent is None:
+                    index[k] = [preb, borav, int(lid), r.get("Mesto", ""),
+                                r.get("Ulica", ""), r.get("KucniBroj", "")]
+                else:
+                    ent[0] += preb
+                    ent[1] += borav
     log(f"[1] Бирачи: {len(files)} локалитета, {rows} редова "
         f"({skipped_stan} прескочено због броја стана), "
         f"{len(index)} адреса са бирачима (без стана).")
@@ -211,6 +218,7 @@ def geocode_voter_addresses(voter_index):
                 "ulica": r.get("ulica_ime", ""),
                 "broj": r.get("kucni_broj", ""),
                 "preb": v[0], "borav": v[1],
+                "loc": v[2], "vmesto": v[3], "vulica": v[4], "vbroj": v[5],
             })
     rate = 100.0 * len(matched_keys) / max(1, len(voter_index))
     log(f"[2] Адресни регистар: {total} редова. Геокодирано "
@@ -276,6 +284,11 @@ def main():
                 "ukupno": p["preb"] + p["borav"],
                 "lat": round(lat, 6),
                 "lon": round(lon, 6),
+                # дубоки линк ка прегледу: ид локалитета + изворна адреса бирача
+                "loc": p["loc"],
+                "vmesto": p["vmesto"],
+                "vulica": p["vulica"],
+                "vbroj": p["vbroj"],
             })
 
     matches.sort(key=lambda m: m["ukupno"], reverse=True)

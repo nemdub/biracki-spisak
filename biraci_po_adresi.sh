@@ -914,11 +914,16 @@ build_tree() {
             fi
         done < <(echo "$ulice_json" | jq -r '.[] | "\(.Value)\t\(.Text)"')
 
+        # $ulice_with_kucni se prosleđuje preko --slurpfile (preko process
+        # substitution-a, tj. stdin/fd) umesto --argjson, jer za velike
+        # lokalitete (npr. ЗРЕЊАНИН: 476 ulica, 17k+ kućnih brojeva) JSON
+        # premaši ARG_MAX i jq pukne sa "Argument list too long". --slurpfile
+        # uvija vrednost u niz, pa koristimo $ulice[0].
         tree=$(echo "$tree" | jq -c \
             --arg id "$mesto_id" \
             --arg name "$mesto_name" \
-            --argjson ulice "$ulice_with_kucni" \
-            '.mesta += [{"id": $id, "name": $name, "ulice": $ulice}]') || return 1
+            --slurpfile ulice <(printf '%s' "$ulice_with_kucni") \
+            '.mesta += [{"id": $id, "name": $name, "ulice": $ulice[0]}]') || return 1
 
         # Finalni red (sa novim redom) — sažeti rezultat za mesto. U paralelnom
         # modu prefiksujemo [W#] da se vidi koji worker piše (i izbacujemo \r

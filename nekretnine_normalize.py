@@ -25,6 +25,7 @@ import glob
 import gzip
 import json
 import os
+import re
 import sys
 import time
 from collections import Counter
@@ -88,9 +89,13 @@ def classify_building(use_type):
 
 
 def is_stan_part(part_use_type):
-    """Део зграде који је стан (не пословни простор) → доказ становања."""
-    u = norm(part_use_type)
-    return u == "stan" or u.startswith("stan ")
+    """Део зграде који је стан (не пословни простор) → доказ становања.
+    Толерише шум као и класификација зграде: префикс 'PREDBELEŽBA:' и суфиксе
+    иза цртице/размака (нпр. 'STAN-ДУПЛЕКС', 'STAN-СУТЕРЕН II', 'PREDBELEŽBA: STAN')
+    — гледа само водећу реч. 'POSLOVNI PROSTOR' остаје негативан."""
+    u = norm(part_use_type).replace("predbelezba:", "").strip()
+    head = re.split(r"[-\s]", u, maxsplit=1)[0]
+    return head == "stan"
 
 
 def has_structure_land(part_use_type):
@@ -101,12 +106,29 @@ def has_structure_land(part_use_type):
     return "zgrad" in u or "objek" in u
 
 
-def parcel_category(n_buildings, building_cats, has_stan, struct_land):
+# Земљиште које носи ПРЕТЕЖНИ/ОСТАЛИ ДЕО ОБЈЕКТА — јавља се кад је један објекат
+# подељен преко више парцела (једна добија „претежни”, друга „остали” део). Зграда
+# је уписана на суседној парцели; помоћни објекат (гаража/шупа) не може бити
+# „претежни део објекта”, па је класификација такве парцеле непоуздана.
+_SPILL = ("preteznim delom objekta", "ostalim delom objekta")
+
+
+def has_spillover_land(part_use_type):
+    u = norm(part_use_type)
+    return any(s in u for s in _SPILL)
+
+
+def parcel_category(n_buildings, building_cats, has_stan, struct_land,
+                    spill_land=False):
     """Сажми категорије свих зграда на парцели у једну категорију парцеле.
     Без зграде: ако земљиште носи траг објекта (нпр. 'pod delom objekta' — зграда
     је уписана на суседној парцели) → 'nepoznato' (постоји структура, намена
     непозната → не обележавамо); иначе → 'bez-objekta' (стварно празна парцела,
-    нпр. њива/плац са адресом). Стан увек побеђује; затим нестамбено; помоћно."""
+    нпр. њива/плац са адресом). Стан увек побеђује; затим нестамбено; помоћно.
+
+    Изузетак (избегавање лажног обележавања): ако је парцела САМО помоћна (гаража/
+    шупа), а земљиште носи 'претежни/остали део објекта' → стварна зграда је на
+    суседној парцели (нпр. стамбени блок преко више парцела), па → 'nepoznato'."""
     if n_buildings == 0:
         return "nepoznato" if struct_land else "bez-objekta"
     if has_stan or "stambeno" in building_cats:
@@ -114,7 +136,7 @@ def parcel_category(n_buildings, building_cats, has_stan, struct_land):
     if "nestambeno" in building_cats:
         return "nestambeno"
     if "pomocno" in building_cats:
-        return "pomocno"
+        return "nepoznato" if spill_land else "pomocno"
     return "nepoznato"
 
 
@@ -154,9 +176,12 @@ def process_locality(loc_dir):
             n_buildings = 0
             has_stan = False
             struct_land = False
+            spill_land = False
             for pp in parcel.get("parcelParts", []):
                 if has_structure_land(pp.get("useType")):
                     struct_land = True
+                if has_spillover_land(pp.get("useType")):
+                    spill_land = True
                 for b in pp.get("buildings", []):
                     n_buildings += 1
                     ut = (b.get("useType") or "").strip()
@@ -175,7 +200,8 @@ def process_locality(loc_dir):
                 "ko_maticni_broj": ko,
                 "parcelNumber": pno,
                 "n_buildings": n_buildings,
-                "kategorija": parcel_category(n_buildings, cats, has_stan, struct_land),
+                "kategorija": parcel_category(n_buildings, cats, has_stan,
+                                              struct_land, spill_land),
                 "kategorije_raw": "|".join(sorted(raw)),
                 "has_residential": int(("stambeno" in cats) or has_stan),
                 "has_stan_parts": int(has_stan),

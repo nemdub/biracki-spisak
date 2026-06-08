@@ -1,16 +1,20 @@
 "use strict";
 
-const ASSET_V = "20260607d"; // подигни верзију кад се подаци/код промене (руши кеш)
+const ASSET_V = "20260608a"; // подигни верзију кад се подаци/код промене (руши кеш)
 
 const COLORS = {
   "nestambeno": "#dc2626",
   "stambeno-moguce": "#d97706",
   "nepoznato": "#6b7280",
+  "pomocno": "#7c3aed",
+  "bez-objekta": "#0891b2",
 };
 const KAT_LABEL = {
   "nestambeno": "нестамбено",
   "stambeno-moguce": "стамбено-могуће",
   "nepoznato": "непознато",
+  "pomocno": "помоћно (гаража, шупа, економски објекат)",
+  "bez-objekta": "без уписане зграде (празна парцела)",
 };
 
 const nf = new Intl.NumberFormat("sr-RS");
@@ -18,17 +22,22 @@ const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 let DATA = null;
+let NES = null;          // подаци катастарске нестамбене анализе
 let cluster = null;
+let clusterNes = null;
 let PROCESSED = new Set(); // ид-ови локалитета доступних у прегледу (index.html)
 
 Promise.all([
   fetch("javni_objekti_report.json?v=" + ASSET_V).then((r) => r.json()),
   fetch("processed_localities.json?v=" + ASSET_V).then((r) => (r.ok ? r.json() : [])).catch(() => []),
+  fetch("biraci_nestambeno_report.json?v=" + ASSET_V).then((r) => (r.ok ? r.json() : null)).catch(() => null),
 ])
-  .then(([d, proc]) => {
+  .then(([d, proc, nes]) => {
     DATA = d;
+    NES = nes;
     PROCESSED = new Set((proc || []).map((p) => p.id));
     render();
+    renderNestambeno();
   })
   .catch((e) => {
     document.getElementById("lead").textContent = "Грешка при учитавању података: " + e;
@@ -167,4 +176,117 @@ function populate() {
     markers.push(mk);
   }
   cluster.addLayers(markers);
+}
+
+// --- Катастарска нестамбена анализа -----------------------------------------
+function renderNestambeno() {
+  if (!NES) {
+    document.getElementById("nesLead").textContent =
+      "Катастарски подаци нису доступни.";
+    return;
+  }
+  const s = NES.summary;
+  const k = s.po_kategoriji || {};
+  const pouzdano_a = (k["nestambeno"]?.adresa || 0) + (k["pomocno"]?.adresa || 0);
+  const pouzdano_b = (k["nestambeno"]?.biraca || 0) + (k["pomocno"]?.biraca || 0);
+
+  document.getElementById("nesLead").innerHTML =
+    `Ова анализа спаја сваку адресу на којој постоје уписани бирачи са <strong>наменом ` +
+    `катастарске парцеле</strong> (преко броја парцеле), па издваја адресе где парцела ` +
+    `нема стамбену зграду. Обрађено је <strong>${nf.format(s.ko_pokriveno)}</strong> ` +
+    `катастарских општина; намена парцеле позната за <strong>${nf.format(s.adresa_u_pokrivenim_ko)}</strong> ` +
+    `адреса са бирачима. Обележено <strong>${nf.format(s.obelezeno)}</strong> адреса ` +
+    `(${nf.format(s.biraca_obelezeno)} бирача).`;
+
+  const cards = [
+    { cls: "red", num: nf.format(pouzdano_a), lbl: `адреса на нестамбеним/помоћним зградама (${nf.format(pouzdano_b)} бирача)` },
+    { cls: "red", num: nf.format(k["nestambeno"]?.adresa || 0), lbl: `на чисто нестамбеним зградама (пословне, јавне, индустријске) — ${nf.format(k["nestambeno"]?.biraca || 0)} бирача` },
+    { cls: "amber", num: nf.format(k["pomocno"]?.adresa || 0), lbl: `на помоћним зградама (гаража, шупа, економски објекат) — ${nf.format(k["pomocno"]?.biraca || 0)} бирача` },
+    { cls: "", num: nf.format(k["bez-objekta"]?.adresa || 0), lbl: `на парцелама без уписане зграде (${nf.format(k["bez-objekta"]?.biraca || 0)} бирача) — мање поуздано` },
+  ];
+  document.getElementById("nesCards").innerHTML = cards.map((c) =>
+    `<div class="card ${c.cls}"><div class="num">${c.num}</div><div class="lbl">${c.lbl}</div></div>`
+  ).join("");
+
+  renderNesTop(NES.matches);
+  renderNesKat(s.po_kategoriji);
+  renderNesBreakdown("nesOpBody", s.po_opstini);
+  renderNesCaveats(s);
+  initMapNes();
+}
+
+function renderNesTop(matches) {
+  const rows = matches.slice(0, 200).map((m) =>
+    `<tr>
+       <td><span class="tag ${m.kategorija}">${esc(KAT_LABEL[m.kategorija] || m.kategorija)}</span></td>
+       <td>${esc(m.namena || "—")}</td>
+       <td>${esc(adresa(m))}</td>
+       <td class="num"><b>${nf.format(m.ukupno)}</b></td>
+       <td>${viewerLink(m, true)}</td>
+     </tr>`
+  ).join("");
+  document.getElementById("nesTopBody").innerHTML = rows;
+}
+
+function renderNesKat(byKat) {
+  const order = ["nestambeno", "pomocno", "bez-objekta"];
+  const rows = order.filter((k) => byKat && byKat[k]).map((k) =>
+    `<tr><td><span class="tag ${k}">${esc(KAT_LABEL[k] || k)}</span></td>` +
+    `<td class="num">${nf.format(byKat[k].adresa)}</td>` +
+    `<td class="num">${nf.format(byKat[k].biraca)}</td></tr>`
+  ).join("");
+  document.getElementById("nesKatBody").innerHTML = rows;
+}
+
+function renderNesBreakdown(id, list) {
+  document.getElementById(id).innerHTML = (list || []).map((r) =>
+    `<tr><td>${esc(r.naziv || "—")}</td><td class="num">${nf.format(r.adresa)}</td><td class="num">${nf.format(r.biraca)}</td></tr>`
+  ).join("");
+}
+
+function renderNesCaveats(s) {
+  const items = [
+    `<strong>Спој преко катастарске парцеле.</strong> Адреса бирача се преко адресног регистра веже за број парцеле, а парцела за намену зграда из листа непокретности. Намена зграде (нпр. „пословна зграда”, „гаража”) је меродаван податак — поузданија од просторне близине.`,
+    `<strong>Стамбено-пословне и викендице се НЕ обележавају.</strong> Ако парцела има иједну стамбену зграду или стан, адреса се сматра стамбеном. Мешовите стамбено-пословне зграде и викендице рачунају се као стамбене.`,
+    `<strong>„Без уписане зграде” је најмање поуздана категорија.</strong> Парцела постоји у катастру али нема уписану зграду (нпр. њива/плац са адресом). Зграда понекад постоји али је уписана на суседној парцели — такве парцеле (са трагом „земљиште под делом објекта”) се изостављају, али могу остати лажни позитиви. Због тога је на мапи подразумевано укључено само поуздано.`,
+    `<strong>Делимична покривеност катастра.</strong> Обрађено је ${nf.format(s.ko_pokriveno)} катастарских општина; адресе ван њих се не анализирају (нема података), па ће број расти како се катастар допуњава. Парцела које нема у катастру се не обележавају.`,
+    `<strong>Приказ је ограничен.</strong> Мапа и табела носе сва поуздана поклапања и до ${nf.format(s.bez_objekta_cap)} најкрупнијих „без зграде” случајева; комплетна листа је у CSV-у за преузимање.`,
+  ];
+  document.getElementById("nesCaveats").innerHTML = items.map((t) => `<li>${t}</li>`).join("");
+}
+
+function initMapNes() {
+  const map = L.map("mapNes").setView([44.0, 20.9], 7);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "© OpenStreetMap",
+  }).addTo(map);
+  clusterNes = L.markerClusterGroup({ chunkedLoading: true, maxClusterRadius: 50 });
+  map.addLayer(clusterNes);
+  populateNes();
+  document.getElementById("fltNesPouzdano").addEventListener("change", populateNes);
+}
+
+function populateNes() {
+  const onlyPouzdano = document.getElementById("fltNesPouzdano").checked;
+  clusterNes.clearLayers();
+  const markers = [];
+  for (const m of NES.matches) {
+    if (onlyPouzdano && m.kategorija === "bez-objekta") continue;
+    const color = COLORS[m.kategorija] || COLORS.nepoznato;
+    const radius = Math.min(14, 4 + Math.sqrt(m.ukupno));
+    const mk = L.circleMarker([m.lat, m.lon], {
+      radius, color: "#fff", weight: 1, fillColor: color, fillOpacity: 0.85,
+    });
+    mk.bindPopup(
+      `<span class="tag ${m.kategorija}" style="background:${color}">${esc(KAT_LABEL[m.kategorija] || m.kategorija)}</span><br>` +
+      (m.namena ? `Намена: ${esc(m.namena)}<br>` : "") +
+      `${esc(adresa(m))}<br>` +
+      `Бирача: <b>${nf.format(m.ukupno)}</b> ` +
+      `(преб. ${nf.format(m.preb)}, борав. ${nf.format(m.borav)})` +
+      viewerLink(m)
+    );
+    markers.push(mk);
+  }
+  clusterNes.addLayers(markers);
 }

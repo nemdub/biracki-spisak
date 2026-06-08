@@ -35,7 +35,7 @@ body { display: block; height: auto; min-height: 100vh; overflow-y: auto; }
 .legend-dot.nestambeno { background: var(--nestambeno); }
 .legend-dot.stambeno { background: var(--stambeno); }
 .legend-dot.nepoznato { background: var(--nepoznato); }
-#map { height: 560px; border: 1px solid var(--border); border-radius: 10px; }
+#map, #mapNes { height: 560px; border: 1px solid var(--border); border-radius: 10px; }
 
 /* Табеле */
 .report table { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
@@ -50,6 +50,8 @@ body { display: block; height: auto; min-height: 100vh; overflow-y: auto; }
 .tag.nestambeno { background: var(--nestambeno); }
 .tag.stambeno-moguce { background: var(--stambeno); }
 .tag.nepoznato { background: var(--nepoznato); }
+.tag.pomocno { background: #7c3aed; }
+.tag.bez-objekta { background: #0891b2; }
 
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
 .scroll-table { max-height: 460px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }

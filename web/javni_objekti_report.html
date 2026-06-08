@@ -6,8 +6,8 @@
   <meta name="robots" content="noindex, nofollow">
   <title>Јавни објекти са уписаним бирачима</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="app.css?v=20260607d">
-  <link rel="stylesheet" href="javni_objekti_report.css?v=20260607d">
+  <link rel="stylesheet" href="app.css?v=20260608a">
+  <link rel="stylesheet" href="javni_objekti_report.css?v=20260608a">
 </head>
 <body>
   <div class="report">
@@ -75,12 +75,77 @@
 
     <h2>Методологија и ограничења</h2>
     <ul class="caveats" id="caveats"></ul>
+
+    <hr style="margin:36px 0;border:none;border-top:2px solid var(--border,#e5e7eb);">
+
+    <header style="padding:0;border:none;background:none;display:block;">
+      <h1 style="font-size:22px;">Бирачи на нестамбеним адресама (катастар)</h1>
+      <p class="lead" id="nesLead">Учитавање…</p>
+    </header>
+
+    <h2>Сажетак</h2>
+    <div class="cards" id="nesCards"></div>
+
+    <h2>Мапа</h2>
+    <div class="map-controls">
+      <label><input type="checkbox" id="fltNesPouzdano" checked> Само поуздано (намена зграде)</label>
+      <span style="margin-left:auto;display:flex;gap:14px;flex-wrap:wrap;">
+        <span><span class="legend-dot" style="background:#dc2626"></span> нестамбено</span>
+        <span><span class="legend-dot" style="background:#7c3aed"></span> помоћно</span>
+        <span><span class="legend-dot" style="background:#0891b2"></span> без објекта</span>
+      </span>
+    </div>
+    <div id="mapNes"></div>
+
+    <h2>Адресе са највише бирача</h2>
+    <div class="scroll-table">
+      <table>
+        <thead><tr>
+          <th>Категорија</th><th>Намена (катастар)</th><th>Адреса</th>
+          <th class="num">Бирача</th><th></th>
+        </tr></thead>
+        <tbody id="nesTopBody"></tbody>
+      </table>
+    </div>
+
+    <h2>Анализа</h2>
+    <div class="two-col">
+      <div>
+        <h3 style="font-size:14px;color:var(--muted);margin:0 0 8px;">По категорији</h3>
+        <div class="scroll-table">
+          <table>
+            <thead><tr><th>Категорија</th><th class="num">Адреса</th><th class="num">Бирача</th></tr></thead>
+            <tbody id="nesKatBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3 style="font-size:14px;color:var(--muted);margin:0 0 8px;">По општини</h3>
+        <div class="scroll-table">
+          <table>
+            <thead><tr><th>Општина</th><th class="num">Адреса</th><th class="num">Бирача</th></tr></thead>
+            <tbody id="nesOpBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <h2>Преузимање</h2>
+    <p class="lead">Комплетна табела свих обележених адреса: <a href="biraci_nestambeno.csv" download>biraci_nestambeno.csv</a></p>
+
+    <h2>Извори података</h2>
+    <ul class="caveats">
+      <li><strong>Катастар непокретности (намена објеката по парцели)</strong> — листе непокретности са <a href="https://a3.geosrbija.rs/" target="_blank" rel="noopener">geoSrbija</a>, спојене на адресни регистар преко броја катастарске парцеле.</li>
+    </ul>
+
+    <h2>Методологија и ограничења</h2>
+    <ul class="caveats" id="nesCaveats"></ul>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
-  <script src="javni_objekti_report.js?v=20260607d"></script>
+  <script src="javni_objekti_report.js?v=20260608a"></script>
 </body>
 </html>

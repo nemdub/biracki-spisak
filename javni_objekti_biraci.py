@@ -240,6 +240,7 @@ def load_nekretnine():
             parcele[(r["ko_maticni_broj"], r["parcelNumber"])] = {
                 "kategorija": r["kategorija"],
                 "kategorije_raw": r["kategorije_raw"],
+                "scraped": r.get("scraped", ""),
             }
     log(f"[нек] Катастар: {ko_pokriveno} KO, {len(parcele)} парцела.")
     return parcele, ko_pokriveno
@@ -251,11 +252,14 @@ _RANK = {"nepoznato": 0, "bez-objekta": 1, "pomocno": 2, "nestambeno": 3, "stamb
 
 
 def classify_address_parcel(parcels, parcele):
-    """Намена адресе на основу њених парцела. Враћа (kategorija, kategorije_raw)
-    или None ако НИЈЕДНА парцела адресе није у катастру (нема података).
-    Конзервативно: ако ИКОЈА парцела има стан → стамбено (не обележава се)."""
+    """Намена адресе на основу њених парцела. Враћа (kategorija, kategorije_raw,
+    scraped) или None ако НИЈЕДНА парцела адресе није у катастру (нема података).
+    Конзервативно: ако ИКОЈА парцела има стан → стамбено (не обележава се).
+    scraped = НАЈСТАРИЈИ снимак међу парцелама адресе (доња граница свежине —
+    ако је иједна парцела стара, обележавање може каснити за стварношћу)."""
     best = None
     raws = []
+    scraped_min = None
     for key in parcels:
         p = parcele.get(key)
         if not p:
@@ -265,9 +269,12 @@ def classify_address_parcel(parcels, parcele):
             best = kat
         if p["kategorije_raw"]:
             raws.append(p["kategorije_raw"])
+        s = p.get("scraped") or ""
+        if s and (scraped_min is None or s < scraped_min):
+            scraped_min = s
     if best is None:
         return None                        # ниједна парцела адресе није у катастру
-    return best, " | ".join(sorted(set(raws)))
+    return best, " | ".join(sorted(set(raws))), (scraped_min or "")
 
 
 def analyze_nekretnine(voter_geo, transformer):
@@ -282,13 +289,14 @@ def analyze_nekretnine(voter_geo, transformer):
         if res is None:
             continue
         u_pokrivenim += 1
-        kat, raw = res
+        kat, raw, scraped = res
         if kat not in FLAG_CATEGORIES:
             continue
         lon, lat = transformer.transform(g["x"], g["y"])
         matches.append({
             "kategorija": kat,
             "namena": raw,
+            "scraped": scraped,
             "opstina": g["opstina"],
             "mesto": g["mesto"],
             "ulica": g["ulica"],
@@ -311,11 +319,11 @@ def analyze_nekretnine(voter_geo, transformer):
 
 
 def write_nestambeno_csv(matches):
-    cols = ["kategorija", "namena", "opstina", "mesto", "ulica", "broj",
+    cols = ["kategorija", "namena", "scraped", "opstina", "mesto", "ulica", "broj",
             "preb", "borav", "ukupno", "lat", "lon"]
-    header = ["kategorija", "namena_katastar", "opstina", "mesto", "ulica",
-              "kucni_broj", "biraca_prebivaliste", "biraca_boraviste",
-              "biraca_ukupno", "lat", "lon"]
+    header = ["kategorija", "namena_katastar", "katastar_snimljen", "opstina",
+              "mesto", "ulica", "kucni_broj", "biraca_prebivaliste",
+              "biraca_boraviste", "biraca_ukupno", "lat", "lon"]
     with open(OUT_NES_CSV, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         w.writerow(header)
@@ -344,6 +352,13 @@ def write_nestambeno_json(matches, adresa_ukupno, u_pokrivenim, ko_pokriveno):
     bez = [m for m in matches if m["kategorija"] == "bez-objekta"][:BEZ_OBJEKTA_JSON_CAP]
     prikazane = sorted(pouzdana + bez, key=lambda m: m["ukupno"], reverse=True)
 
+    # Свежина катастарског снимка (mtime ЛН фајлова) — потрошач у извештају рачуна
+    # старост у односу на данас и упозорава да катастар може каснити за стварношћу.
+    sd = sorted(m["scraped"] for m in matches if m.get("scraped"))
+    snimljeno = {
+        "min": sd[0], "max": sd[-1], "median": sd[len(sd) // 2],
+    } if sd else None
+
     summary = {
         "biraca_adresa_ukupno": adresa_ukupno,
         "adresa_u_pokrivenim_ko": u_pokrivenim,
@@ -352,6 +367,7 @@ def write_nestambeno_json(matches, adresa_ukupno, u_pokrivenim, ko_pokriveno):
         "biraca_obelezeno": total_biraca,
         "prikazano": len(prikazane),
         "bez_objekta_cap": BEZ_OBJEKTA_JSON_CAP,
+        "snimljeno": snimljeno,
         "po_kategoriji": {k: v for k, v in by_kat.items()},
         "po_opstini": top(by_opstina),
     }

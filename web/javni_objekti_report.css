@@ -54,6 +54,10 @@ body { display: block; height: auto; min-height: 100vh; overflow-y: auto; }
 .tag.bez-objekta { background: #0891b2; }
 /* Опис категорије уз пилулу — пригушено, ван заобљене ознаке. */
 .kat-desc { margin-left: 6px; color: var(--muted); font-size: 11px; }
+/* Старост катастарског снимка по адреси. */
+.fresh { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.fresh.stale-amber { color: #b45309; font-weight: 600; }
+.fresh.stale-red { color: var(--nestambeno); font-weight: 600; }
 
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
 .scroll-table { max-height: 460px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }

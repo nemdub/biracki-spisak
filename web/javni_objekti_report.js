@@ -1,6 +1,6 @@
 "use strict";
 
-const ASSET_V = "20260608b"; // подигни верзију кад се подаци/код промене (руши кеш)
+const ASSET_V = "20260609a"; // подигни верзију кад се подаци/код промене (руши кеш)
 
 const COLORS = {
   "nestambeno": "#dc2626",
@@ -42,6 +42,23 @@ function objTag(m) {
 const nf = new Intl.NumberFormat("sr-RS");
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// Старост катастарског снимка: датум нема у извору, изводи се из времена фајла
+// (кад је парцела скинута са geoSrbija). Што старији снимак, то већа шанса да
+// катастар каска за стварношћу (нова стамбена градња неуписана) → благо упозорење.
+function ageMonths(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr + "T00:00:00");
+  if (isNaN(d)) return null;
+  return Math.max(0, Math.round((Date.now() - d) / (30.44 * 24 * 3600 * 1000)));
+}
+function freshness(dateStr) {
+  const m = ageMonths(dateStr);
+  if (m == null) return { txt: "—", cls: "" };
+  const label = m < 1 ? "<1 мес." : `пре ${m} мес.`;
+  const cls = m >= 18 ? "stale-red" : m >= 9 ? "stale-amber" : "";
+  return { txt: `${esc(dateStr)} · ${label}`, cls };
+}
 
 let DATA = null;
 let NES = null;          // подаци катастарске нестамбене анализе
@@ -225,6 +242,14 @@ function renderNestambeno() {
     { cls: "amber", num: nf.format(k["pomocno"]?.adresa || 0), lbl: `на помоћним зградама (гаража, шупа, економски објекат) — ${nf.format(k["pomocno"]?.biraca || 0)} бирача` },
     { cls: "", num: nf.format(k["bez-objekta"]?.adresa || 0), lbl: `на парцелама без уписане зграде (${nf.format(k["bez-objekta"]?.biraca || 0)} бирача) — мање поуздано` },
   ];
+  if (s.snimljeno) {
+    const f = freshness(s.snimljeno.median);
+    cards.push({
+      cls: f.cls === "stale-red" ? "red" : f.cls === "stale-amber" ? "amber" : "",
+      num: `пре ${ageMonths(s.snimljeno.median)} мес.`,
+      lbl: `медијана старости катастарског снимка (од ${esc(s.snimljeno.min)} до ${esc(s.snimljeno.max)}) — старији снимак може каснити за новом градњом`,
+    });
+  }
   document.getElementById("nesCards").innerHTML = cards.map((c) =>
     `<div class="card ${c.cls}"><div class="num">${c.num}</div><div class="lbl">${c.lbl}</div></div>`
   ).join("");
@@ -243,6 +268,7 @@ function renderNesTop(matches) {
        <td>${esc(m.namena || "—")}</td>
        <td>${esc(adresa(m))}</td>
        <td class="num"><b>${nf.format(m.ukupno)}</b></td>
+       <td class="fresh ${freshness(m.scraped).cls}">${freshness(m.scraped).txt}</td>
        <td>${viewerLink(m, true)}</td>
      </tr>`
   ).join("");
@@ -271,6 +297,7 @@ function renderNesCaveats(s) {
     `<strong>Стамбено-пословне и викендице се НЕ обележавају.</strong> Ако парцела има иједну стамбену зграду или стан, адреса се сматра стамбеном. Мешовите стамбено-пословне зграде и викендице рачунају се као стамбене.`,
     `<strong>„Без уписане зграде” је најмање поуздана категорија.</strong> Парцела постоји у катастру али нема уписану зграду (нпр. њива/плац са адресом). Зграда понекад постоји али је уписана на суседној парцели — такве парцеле (са трагом „земљиште под делом објекта”) се изостављају, али могу остати лажни позитиви. Због тога је на мапи подразумевано укључено само поуздано.`,
     `<strong>Делимична покривеност катастра.</strong> Обрађено је ${nf.format(s.ko_pokriveno)} катастарских општина; адресе ван њих се не анализирају (нема података), па ће број расти како се катастар допуњава. Парцела које нема у катастру се не обележавају.`,
+    `<strong>Старост катастарског снимка.</strong> Катастарски подаци немају поље датума, па се старост снимка изводи из времена преузимања сваке парцеле са geoSrbija${s.snimljeno ? ` (од <strong>${esc(s.snimljeno.min)}</strong> до <strong>${esc(s.snimljeno.max)}</strong>, медијана ${esc(s.snimljeno.median)})` : ""}. То је доња граница свежине: и сам катастар може каснити за стварношћу — нпр. нова стамбена зграда још неуписана на парцели води до лажног „нестамбено/без зграде”. Колона „Катастар снимљен” и ознака у искачућем прозору показују старост по адреси; старији снимци су подложнији овој грешци.`,
     `<strong>Приказ је ограничен.</strong> Мапа и табела носе сва поуздана поклапања и до ${nf.format(s.bez_objekta_cap)} најкрупнијих „без зграде” случајева; комплетна листа је у CSV-у за преузимање.`,
   ];
   document.getElementById("nesCaveats").innerHTML = items.map((t) => `<li>${t}</li>`).join("");
@@ -304,7 +331,8 @@ function populateNes() {
       (m.namena ? `Намена: ${esc(m.namena)}<br>` : "") +
       `${esc(adresa(m))}<br>` +
       `Бирача: <b>${nf.format(m.ukupno)}</b> ` +
-      `(преб. ${nf.format(m.preb)}, борав. ${nf.format(m.borav)})` +
+      `(преб. ${nf.format(m.preb)}, борав. ${nf.format(m.borav)})<br>` +
+      `<span class="fresh ${freshness(m.scraped).cls}">Катастар снимљен: ${freshness(m.scraped).txt}</span>` +
       viewerLink(m)
     );
     markers.push(mk);

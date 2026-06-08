@@ -100,11 +100,13 @@ parcel
 
 - **`data/processed/nekretnine_parcele.csv.gz`** — једна врста по СВАКОЈ парцели
   (и без зграде), gzip (~10 MB; некомпримовано ~136 MB):
-  `ko_maticni_broj, parcelNumber, n_buildings, kategorija, kategorije_raw, has_residential, has_stan_parts`
+  `ko_maticni_broj, parcelNumber, n_buildings, kategorija, kategorije_raw, has_residential, has_stan_parts, scraped`
   - Емитују се и парцеле без зграде да би потрошач разликовао „парцела постоји
     у катастру, празна” (bez-objekta) од „парцеле нема у катастру” (нема података).
+  - `scraped` (YYYY-MM-DD) = старост снимка по парцели, изведена из времена измене
+    ЛН фајла (извор нема поље датума; mtime = тренутак преузимања са geoSrbija).
 - **`data/processed/nekretnine_ko_coverage.csv`** — обухват по KO:
-  `ko_maticni_broj, municipalityName, cadmunName, parcels_total, parcels_with_buildings`
+  `ko_maticni_broj, municipalityName, cadmunName, parcels_total, parcels_with_buildings, scraped_min, scraped_max`
 
 ## 5. Укрштање са бирачима (`javni_objekti_biraci.py`)
 
@@ -137,4 +139,9 @@ parcel
   таквих, али лажни позитиви остају; зато је на мапи подразумевано само поуздано
   и категорија се приказује одвојено.
 - **Намена може каснити за стварношћу** — нпр. легализација у току, нова градња.
+  Старост снимка (`scraped`) се носи кроз цев до извештаја: `biraci_nestambeno.csv`
+  има колону `katastar_snimljen`, а `..._report.json` поље `snimljeno` (min/median/max)
+  и `scraped` по поклапању. Извештај рачуна старост у месецима и упозорава да старији
+  снимак лакше промаши нову стамбену зграду (лажно „нестамбено/без зграде”). То је
+  доња граница свежине — и сам катастар може каснити независно од датума снимка.
 - **Мешовите/викендице се не обележавају** — садрже становање, по одлуци.

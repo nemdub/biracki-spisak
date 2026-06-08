@@ -155,6 +155,11 @@ def process_locality(loc_dir):
                 data = json.load(f)
         except Exception:
             continue
+        # Извор нема поље датума, па се старост снимка изводи из времена измене
+        # фајла (скидање са geoSrbija писало је сваки ЛН фајл у тренутку преузимања).
+        # Служи као доња граница свежине: катастар може и иначе да каска за стварношћу
+        # (нова градња неуписана), али овим бар знамо кад смо снимили затечено стање.
+        scraped = time.strftime("%Y-%m-%d", time.localtime(os.path.getmtime(path)))
         for parcel in data:
             ko = str(parcel.get("cadmunId") or "").strip()
             pno = str(parcel.get("parcelNumber") or "").strip()
@@ -168,8 +173,14 @@ def process_locality(loc_dir):
                     "cadmunName": parcel.get("cadmunName", "") or "",
                     "parcels_total": 0,
                     "parcels_with_buildings": 0,
+                    "scraped_min": scraped,
+                    "scraped_max": scraped,
                 }
             cov["parcels_total"] += 1
+            if scraped < cov["scraped_min"]:
+                cov["scraped_min"] = scraped
+            if scraped > cov["scraped_max"]:
+                cov["scraped_max"] = scraped
 
             cats = set()
             raw = Counter()
@@ -205,6 +216,7 @@ def process_locality(loc_dir):
                 "kategorije_raw": "|".join(sorted(raw)),
                 "has_residential": int(("stambeno" in cats) or has_stan),
                 "has_stan_parts": int(has_stan),
+                "scraped": scraped,
             }
     return list(parcele.values()), list(coverage.values()), n_files
 
@@ -244,7 +256,7 @@ def main():
     # Парцеле
     all_parcele.sort(key=lambda r: (r["ko_maticni_broj"], r["parcelNumber"]))
     pcols = ["ko_maticni_broj", "parcelNumber", "n_buildings", "kategorija",
-             "kategorije_raw", "has_residential", "has_stan_parts"]
+             "kategorije_raw", "has_residential", "has_stan_parts", "scraped"]
     with gzip.open(OUT_PARCELE, "wt", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         w.writerow(pcols)
@@ -254,7 +266,7 @@ def main():
     # Обухват по KO
     cov_list = sorted(coverage_merged.values(), key=lambda c: c["ko_maticni_broj"])
     ccols = ["ko_maticni_broj", "municipalityName", "cadmunName",
-             "parcels_total", "parcels_with_buildings"]
+             "parcels_total", "parcels_with_buildings", "scraped_min", "scraped_max"]
     with open(OUT_COVERAGE, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         w.writerow(ccols)
@@ -269,6 +281,9 @@ def main():
         f"{len(cov_list)} KO, {len(all_parcele)} парцела.")
     log(f"    По категорији парцеле: " +
         ", ".join(f"{k}={v}" for k, v in by_kat.most_common()))
+    scraped_all = [r["scraped"] for r in all_parcele if r.get("scraped")]
+    if scraped_all:
+        log(f"    Старост снимка (mtime фајлова): {min(scraped_all)} … {max(scraped_all)}")
     log(f"    CSV: {OUT_PARCELE}")
     log(f"    CSV: {OUT_COVERAGE}")
 

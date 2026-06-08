@@ -1,6 +1,6 @@
 "use strict";
 
-const ASSET_V = "20260608a"; // подигни верзију кад се подаци/код промене (руши кеш)
+const ASSET_V = "20260608b"; // подигни верзију кад се подаци/код промене (руши кеш)
 
 const COLORS = {
   "nestambeno": "#dc2626",
@@ -13,9 +13,31 @@ const KAT_LABEL = {
   "nestambeno": "нестамбено",
   "stambeno-moguce": "стамбено-могуће",
   "nepoznato": "непознато",
-  "pomocno": "помоћно (гаража, шупа, економски објекат)",
-  "bez-objekta": "без уписане зграде (празна парцела)",
+  "pomocno": "помоћно",
+  "bez-objekta": "без зграде",
 };
+// Опис категорије иде уз ознаку као пригушени текст (не у заобљену „пилулу”) —
+// дугачке вредности кваре изглед пилуле, па ознака носи кратак назив, а детаљ стоји поред.
+const KAT_DESC = {
+  "pomocno": "гаража, шупа, економски објекат",
+  "bez-objekta": "празна парцела",
+};
+
+// Ознака категорије: кратка пилула + (по потреби) пригушени опис поред ње.
+function katTag(k) {
+  const lbl = esc(KAT_LABEL[k] || k);
+  const desc = KAT_DESC[k];
+  return `<span class="tag ${k}">${lbl}</span>` +
+    (desc ? `<span class="kat-desc">${esc(desc)}</span>` : "");
+}
+
+// Ознака јавног објекта: кратка пилула категорије + тип установе као пригушени
+// текст поред (исти образац као katTag — дугачак тип не иде у заобљену пилулу).
+function objTag(m) {
+  const lbl = esc(KAT_LABEL[m.kategorija] || m.kategorija);
+  return `<span class="tag ${m.kategorija}">${lbl}</span>` +
+    (m.tip ? `<span class="kat-desc">${esc(m.tip)}</span>` : "");
+}
 
 const nf = new Intl.NumberFormat("sr-RS");
 const esc = (s) => String(s == null ? "" : s)
@@ -107,7 +129,7 @@ function renderTop(matches) {
   const rows = matches.slice(0, 200).map((m) =>
     `<tr>
        <td>${esc(m.naziv)}</td>
-       <td><span class="tag ${m.kategorija}">${esc(m.tip || "—")}</span></td>
+       <td>${objTag(m)}</td>
        <td>${esc(adresa(m))}</td>
        <td class="num">${m.rastojanje_m}</td>
        <td class="num"><b>${nf.format(m.ukupno)}</b></td>
@@ -165,8 +187,7 @@ function populate() {
     });
     mk.bindPopup(
       `<b>${esc(m.naziv)}</b><br>` +
-      `<span class="tag ${m.kategorija}" style="background:${color}">${esc(m.tip || "—")}</span> ` +
-      `· ${KAT_LABEL[m.kategorija] || ""}<br>` +
+      `${objTag(m)}<br>` +
       `${esc(adresa(m))}<br>` +
       `Растојање: ${m.rastojanje_m} m<br>` +
       `Бирача: <b>${nf.format(m.ukupno)}</b> ` +
@@ -218,7 +239,7 @@ function renderNestambeno() {
 function renderNesTop(matches) {
   const rows = matches.slice(0, 200).map((m) =>
     `<tr>
-       <td><span class="tag ${m.kategorija}">${esc(KAT_LABEL[m.kategorija] || m.kategorija)}</span></td>
+       <td>${katTag(m.kategorija)}</td>
        <td>${esc(m.namena || "—")}</td>
        <td>${esc(adresa(m))}</td>
        <td class="num"><b>${nf.format(m.ukupno)}</b></td>
@@ -231,7 +252,7 @@ function renderNesTop(matches) {
 function renderNesKat(byKat) {
   const order = ["nestambeno", "pomocno", "bez-objekta"];
   const rows = order.filter((k) => byKat && byKat[k]).map((k) =>
-    `<tr><td><span class="tag ${k}">${esc(KAT_LABEL[k] || k)}</span></td>` +
+    `<tr><td>${katTag(k)}</td>` +
     `<td class="num">${nf.format(byKat[k].adresa)}</td>` +
     `<td class="num">${nf.format(byKat[k].biraca)}</td></tr>`
   ).join("");
@@ -279,7 +300,7 @@ function populateNes() {
       radius, color: "#fff", weight: 1, fillColor: color, fillOpacity: 0.85,
     });
     mk.bindPopup(
-      `<span class="tag ${m.kategorija}" style="background:${color}">${esc(KAT_LABEL[m.kategorija] || m.kategorija)}</span><br>` +
+      `${katTag(m.kategorija)}<br>` +
       (m.namena ? `Намена: ${esc(m.namena)}<br>` : "") +
       `${esc(adresa(m))}<br>` +
       `Бирача: <b>${nf.format(m.ukupno)}</b> ` +

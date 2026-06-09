@@ -93,7 +93,7 @@ if [[ -n "$PROXY" ]]; then
 fi
 # Povremena provera izlaznog IP-a (vidi log_egress_ip). Brojanje je per-worker
 # preko $LEAF_PROCESSED_COUNT — svaki worker je zaseban proces pa ne dele brojač.
-IP_CHECK_INTERVAL="${IP_CHECK_INTERVAL:-10}"
+IP_CHECK_INTERVAL="${IP_CHECK_INTERVAL:-50}"
 IP_ECHO_URL="${IP_ECHO_URL:-https://api.ipify.org}"
 LEAF_PROCESSED_COUNT=0
 LOCALITIES_FILE="./data/localities.json"

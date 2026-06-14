@@ -53,11 +53,11 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf dist
-          mkdir -p dist/web dist/data/processed
-          cp -R web/. dist/web/
+          mkdir -p dist/data/processed
+          cp -R web/. dist/
           cp data/localities.json dist/data/
           cp -R data/processed/biraci_po_adresi dist/data/processed/
-          printf '/    /web/    301\n' > dist/_redirects
+          printf '/web/*    /:splat    301\n' > dist/_redirects
           printf 'User-agent: *\nDisallow: /\n' > dist/robots.txt
 
       # Assembles the downloadable CSV bundles into dist/data/exports/:

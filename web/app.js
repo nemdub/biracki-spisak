@@ -1,7 +1,7 @@
 "use strict";
 
 const ASSET_V = "20260614b"; // подигни верзију кад се подаци/код промене (руши кеш)
-const DATA_BASE = "../data";
+const DATA_BASE = "data";
 const CSV_DIR = DATA_BASE + "/processed/biraci_po_adresi";
 
 // Очекивани укупан број адреса (без станова) након комплетног прикупљања —

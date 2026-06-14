@@ -17,7 +17,7 @@ nekretnine_parcele.csv.gz) да нађе бираче уписане на нес
   4. Класификуј, претвори UTM -> WGS84 и испиши резултате.
 
 Излаз:
-  web/javni_objekti_sa_biracima.csv     — табела поклапања са објектима
+  web/javni_objekti_sa_biracima.csv     — табела спојева са објектима
   web/javni_objekti_report.json         — подаци + сажетак (објекти)
   web/biraci_nestambeno.csv             — бирачи на нестамбеним адресама (катастар)
   web/biraci_nestambeno_report.json     — подаци + сажетак (катастар)
@@ -57,12 +57,12 @@ OUT_NES_JSON = os.path.join(ROOT, "web", "biraci_nestambeno_report.json")
 
 # Парцеле обележене као нестамбене за бираче. Не обележавамо стамбено/непознато.
 FLAG_CATEGORIES = {"nestambeno", "pomocno", "bez-objekta"}
-# JSON (мапа/табела) увек носи СВА поуздана поклапања (намена зграде: nestambeno/
+# JSON (мапа/табела) увек носи СВА поуздана спајања (намена зграде: nestambeno/
 # pomocno), а 'bez-objekta' (шумовито — зграда зна бити уписана на суседној
 # парцели) ограничавамо на топ N по броју бирача. Пуна листа иде у CSV.
 BEZ_OBJEKTA_JSON_CAP = 2000
 
-# Просторно поклапање: задржи поклапања до MAX_RADIUS m (јединствена прецизност).
+# Просторно спајање: задржи спајања до MAX_RADIUS m (јединствена прецизност).
 MAX_RADIUS = 15.0
 CELL = MAX_RADIUS  # величина ћелије = радијус → довољан је 3x3 блок око упита
 
@@ -147,7 +147,7 @@ def build_voter_index():
             for r in csv.DictReader(f):
                 rows += 1
                 # Бирачи са бројем стана су станари (нпр. „Вука Караџића 21/4”).
-                # objekti.csv нема број стана, па их не рачунамо као поклапање —
+                # objekti.csv нема број стана, па их не рачунамо као спој —
                 # рачунамо само бираче уписане на голу адресу зграде (без стана).
                 if (r.get("Stan") or "").strip():
                     skipped_stan += 1
@@ -409,7 +409,7 @@ def write_nestambeno_json(matches, adresa_ukupno, u_pokrivenim, ko_pokriveno):
         f"{k}={v['adresa']} ({v['biraca']} бир.)" for k, v in by_kat.items()))
 
 
-# --- 3. + 4. Поклапање објеката и излаз -------------------------------------
+# --- 3. + 4. Спајање објеката и излаз -------------------------------------
 def main():
     voter_index, localities, skipped_stan = build_voter_index()
     grid, voter_geo, geo_stats = geocode_voter_addresses(voter_index)
@@ -469,7 +469,7 @@ def main():
             })
 
     matches.sort(key=lambda m: m["ukupno"], reverse=True)
-    log(f"[3] Објеката: {objekti_total}. Поклапања (≤{MAX_RADIUS:.0f}m, бирача>0): "
+    log(f"[3] Објеката: {objekti_total}. Спојева (≤{MAX_RADIUS:.0f}m, бирача>0): "
         f"{len(matches)} (одбачено {excluded_broj} лажних — други кућни број).")
 
     geo_stats["iskljuceno_broj"] = excluded_broj
@@ -531,7 +531,7 @@ def write_json(matches, localities, objekti_total, geo_stats):
     log(f"[4] JSON: {OUT_JSON}.")
     # Сажетак на конзоли
     log("")
-    log(f"    Поклапања (≤{MAX_RADIUS:.0f}m): {len(matches)}  |  бирача укупно: {total_biraca}")
+    log(f"    Спојева (≤{MAX_RADIUS:.0f}m): {len(matches)}  |  бирача укупно: {total_biraca}")
     log(f"    По категорији: " + ", ".join(
         f"{k}={v['objekata']} ({v['biraca']} бир.)" for k, v in by_kat.items()))
     log("    Топ 8 типова по броју бирача:")

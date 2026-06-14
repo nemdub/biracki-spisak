@@ -199,6 +199,7 @@ def geocode_voter_addresses(voter_index):
             matched_keys.add(k)
             grid[(int(x // CELL), int(y // CELL))].append({
                 "x": x, "y": y,
+                "key": k,  # ради споја са катастром (намена парцеле адресе)
                 "opstina": r.get("opstina_ime", ""),
                 "mesto": r.get("naselje_ime", ""),
                 "ulica": r.get("ulica_ime", ""),
@@ -305,9 +306,8 @@ def classify_address_parcel(parcels, parcele):
     return best, " | ".join(sorted(set(raws))), (scraped_min or "")
 
 
-def analyze_nekretnine(voter_geo, transformer):
+def analyze_nekretnine(voter_geo, transformer, parcele, ko_pokriveno):
     """Прођи кроз геокодиране адресе бирача и обележи нестамбене (катастар)."""
-    parcele, ko_pokriveno = load_nekretnine()
     if parcele is None:
         return None
     matches = []
@@ -417,11 +417,15 @@ def main():
 
     transformer = Transformer.from_crs("EPSG:32634", "EPSG:4326", always_xy=True)
 
-    analyze_nekretnine(voter_geo, transformer)
+    # Катастар се учитава једном: користи га и нестамбена анализа (део 2) и
+    # филтер лажних позитива у поклапању објеката (део 1, испод).
+    parcele, ko_pokriveno = load_nekretnine()
+    analyze_nekretnine(voter_geo, transformer, parcele, ko_pokriveno)
 
     matches = []
     objekti_total = 0
     excluded_broj = 0   # одбачени лажни позитиви (иста улица, други кућни број)
+    excluded_stambeno = 0  # одбачени: катастар каже да адреса ИМА стамбену зграду
     with open(OBJEKTI, encoding="utf-8", newline="") as f:
         for r in csv.DictReader(f):
             objekti_total += 1
@@ -444,6 +448,17 @@ def main():
                     and norm_broj(o_broj) != norm_broj(p["broj"])):
                 excluded_broj += 1
                 continue
+            # Лажни позитив (мешовита стамбено-пословна зграда): ако катастар каже
+            # да адреса бирача ИМА стамбену зграду, бирачи ту легитимно станују, па
+            # јавни објекат (нпр. ветеринарска амбуланта у приземљу стамбене зграде)
+            # није аномалија. Изостављамо такве — задржавамо само адресе које по
+            # катастру немају стамбену зграду (или нису у покривеној KO).
+            if parcele is not None:
+                g = voter_geo.get(p["key"])
+                cad = classify_address_parcel(g["parcels"], parcele) if g else None
+                if cad is not None and cad[0] == "stambeno":
+                    excluded_stambeno += 1
+                    continue
             lon, lat = transformer.transform(x, y)
             tip = r.get("tip_ustanove", "") or ""
             matches.append({
@@ -470,9 +485,11 @@ def main():
 
     matches.sort(key=lambda m: m["ukupno"], reverse=True)
     log(f"[3] Објеката: {objekti_total}. Спојева (≤{MAX_RADIUS:.0f}m, бирача>0): "
-        f"{len(matches)} (одбачено {excluded_broj} лажних — други кућни број).")
+        f"{len(matches)} (одбачено {excluded_broj} — други кућни број, "
+        f"{excluded_stambeno} — стамбена зграда по катастру).")
 
     geo_stats["iskljuceno_broj"] = excluded_broj
+    geo_stats["iskljuceno_stambeno"] = excluded_stambeno
     write_csv(matches)
     write_json(matches, localities, objekti_total, geo_stats)
 
@@ -521,6 +538,7 @@ def write_json(matches, localities, objekti_total, geo_stats):
         "ocekivano_adresa": EXPECTED_ADDRESSES,
         "preskoceno_stan": geo_stats.get("preskoceno_stan"),
         "iskljuceno_broj": geo_stats.get("iskljuceno_broj"),
+        "iskljuceno_stambeno": geo_stats.get("iskljuceno_stambeno"),
         "po_kategoriji": {k: v for k, v in by_kat.items()},
         "po_tipu": top(by_tip),
         "po_opstini": top(by_opstina),

@@ -234,7 +234,7 @@ function setupTable(loc) {
   const dateStr = maxTs ? new Date(maxTs * 1000).toLocaleDateString("sr") : "—";
   const stanPct = state.allRows.length ? (withStan / state.allRows.length * 100) : 0;
   document.getElementById("localityMeta").textContent =
-    `Општина: ${opstina} · ID: ${loc.id} · Адреса: ${state.allRows.length.toLocaleString("sr")} · Адреса са бројм стана: ${stanPct.toFixed(1)}% · Ажурирано: ${dateStr}`;
+    `Општина: ${opstina} · ID: ${loc.id} · Адреса: ${state.allRows.length.toLocaleString("sr")} · Адреса са бројем стана: ${stanPct.toFixed(1)}% · Ажурирано: ${dateStr}`;
 
   const headRow = document.getElementById("headRow");
   headRow.innerHTML = "";

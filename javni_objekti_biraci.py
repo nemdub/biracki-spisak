@@ -62,9 +62,8 @@ FLAG_CATEGORIES = {"nestambeno", "pomocno", "bez-objekta"}
 # парцели) ограничавамо на топ N по броју бирача. Пуна листа иде у CSV.
 BEZ_OBJEKTA_JSON_CAP = 2000
 
-# Просторно поклапање: задржи поклапања до MAX_RADIUS m; band ≤ HIGH_CONF = висока поузданост.
-MAX_RADIUS = 20.0
-HIGH_CONF = 10.0
+# Просторно поклапање: задржи поклапања до MAX_RADIUS m (јединствена прецизност).
+MAX_RADIUS = 15.0
 CELL = MAX_RADIUS  # величина ћелије = радијус → довољан је 3x3 блок око упита
 
 # Очекивани укупан број адреса (без бројева станова) кад се заврши прикупљање
@@ -89,6 +88,35 @@ def classify(tip):
         if sub in tl:
             return "stambeno-moguce"
     return "nestambeno"
+
+
+_ADR_DIGIT = re.compile(r"\d")
+
+
+def parse_adresa_broj(adresa):
+    """Издвоји (улица, кућни_број) из споја у objekti.csv ('Михајла Валтровића
+    36 А' -> ('Михајла Валтровића', '36 А')). Број је на крају: скупљамо завршне
+    токене док садрже цифру, уз евентуални једнословни/двословни суфикс ('А','Б').
+    Враћа (улица, број) или (adresa, None) ако нема препознатљивог броја — тада
+    број не упоређујемо (ослањамо се само на координате)."""
+    toks = (adresa or "").strip().split()
+    if not toks:
+        return "", None
+    i = len(toks)
+    seen_digit = False
+    while i > 0:
+        t = toks[i - 1]
+        if _ADR_DIGIT.search(t):           # '36', '10-10' — језгро броја
+            seen_digit = True
+            i -= 1
+            continue
+        if len(t) <= 2 and t.isalpha() and not seen_digit:  # суфикс 'А' у '36 А'
+            i -= 1
+            continue
+        break
+    if not seen_digit:
+        return (adresa or "").strip(), None
+    return " ".join(toks[:i]).strip(), " ".join(toks[i:]).strip()
 
 
 def log(msg):
@@ -393,6 +421,7 @@ def main():
 
     matches = []
     objekti_total = 0
+    excluded_broj = 0   # одбачени лажни позитиви (иста улица, други кућни број)
     with open(OBJEKTI, encoding="utf-8", newline="") as f:
         for r in csv.DictReader(f):
             objekti_total += 1
@@ -402,6 +431,18 @@ def main():
             x, y = pt
             p, dist = nearest_in_grid(grid, x, y)
             if p is None:
+                continue
+            # Лажни позитив: координате нађу најближу зграду, али objekti.csv има
+            # СОПСТВЕНУ адресу — ако је иста улица а ДРУГИ кућни број, спој везује
+            # бираче суседне зграде (нпр. објекат на бр. 41, најближа уписана на
+            # бр. 39). Разлика само у облику броја ('36 А'↔'36А') се НЕ одбацује
+            # (norm_broj их изједначи). Без препознатог броја или на другој улици
+            # се ослањамо само на координате.
+            o_ulica, o_broj = parse_adresa_broj(r.get("adresa"))
+            if (o_broj is not None
+                    and norm(o_ulica) == norm(p["ulica"])
+                    and norm_broj(o_broj) != norm_broj(p["broj"])):
+                excluded_broj += 1
                 continue
             lon, lat = transformer.transform(x, y)
             tip = r.get("tip_ustanove", "") or ""
@@ -429,8 +470,9 @@ def main():
 
     matches.sort(key=lambda m: m["ukupno"], reverse=True)
     log(f"[3] Објеката: {objekti_total}. Поклапања (≤{MAX_RADIUS:.0f}m, бирача>0): "
-        f"{len(matches)}.")
+        f"{len(matches)} (одбачено {excluded_broj} лажних — други кућни број).")
 
+    geo_stats["iskljuceno_broj"] = excluded_broj
     write_csv(matches)
     write_json(matches, localities, objekti_total, geo_stats)
 
@@ -453,7 +495,6 @@ def write_json(matches, localities, objekti_total, geo_stats):
     by_tip = defaultdict(lambda: {"objekata": 0, "biraca": 0})
     by_opstina = defaultdict(lambda: {"objekata": 0, "biraca": 0})
     by_kat = defaultdict(lambda: {"objekata": 0, "biraca": 0})
-    high_conf = 0
     total_biraca = 0
     for m in matches:
         by_tip[m["tip"] or "(непознато)"]["objekata"] += 1
@@ -463,8 +504,6 @@ def write_json(matches, localities, objekti_total, geo_stats):
         by_kat[m["kategorija"]]["objekata"] += 1
         by_kat[m["kategorija"]]["biraca"] += m["ukupno"]
         total_biraca += m["ukupno"]
-        if m["rastojanje_m"] <= HIGH_CONF:
-            high_conf += 1
 
     def top(d, n=None):
         items = sorted(d.items(), key=lambda kv: kv[1]["biraca"], reverse=True)
@@ -474,15 +513,14 @@ def write_json(matches, localities, objekti_total, geo_stats):
         "objekata_ukupno": objekti_total,
         "poklapanja": len(matches),
         "biraca_ukupno": total_biraca,
-        "visoka_pouzdanost": high_conf,
         "max_radius": MAX_RADIUS,
-        "high_conf_radius": HIGH_CONF,
         "lokaliteta_sa_biracima": len(localities),
         "geokodirano_rate": geo_stats.get("geocode_rate"),
         "geokodirano": geo_stats.get("geocoded"),
         "adresa_sa_biracima": geo_stats.get("voter_addresses"),
         "ocekivano_adresa": EXPECTED_ADDRESSES,
         "preskoceno_stan": geo_stats.get("preskoceno_stan"),
+        "iskljuceno_broj": geo_stats.get("iskljuceno_broj"),
         "po_kategoriji": {k: v for k, v in by_kat.items()},
         "po_tipu": top(by_tip),
         "po_opstini": top(by_opstina),
@@ -493,8 +531,7 @@ def write_json(matches, localities, objekti_total, geo_stats):
     log(f"[4] JSON: {OUT_JSON}.")
     # Сажетак на конзоли
     log("")
-    log(f"    Поклапања: {len(matches)}  |  бирача укупно: {total_biraca}  |  "
-        f"висока поузданост (≤{HIGH_CONF:.0f}m): {high_conf}")
+    log(f"    Поклапања (≤{MAX_RADIUS:.0f}m): {len(matches)}  |  бирача укупно: {total_biraca}")
     log(f"    По категорији: " + ", ".join(
         f"{k}={v['objekata']} ({v['biraca']} бир.)" for k, v in by_kat.items()))
     log("    Топ 8 типова по броју бирача:")

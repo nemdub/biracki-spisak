@@ -1,6 +1,6 @@
 "use strict";
 
-const ASSET_V = "20260609a"; // подигни верзију кад се подаци/код промене (руши кеш)
+const ASSET_V = "20260614b"; // подигни верзију кад се подаци/код промене (руши кеш)
 
 const COLORS = {
   "nestambeno": "#dc2626",
@@ -101,13 +101,12 @@ function viewerLink(m, compact) {
 
 function render() {
   const s = DATA.summary;
-  document.getElementById("hcR").textContent = s.high_conf_radius;
 
   document.getElementById("lead").innerHTML =
     `Овај извештај укршта <strong>адресни регистар</strong> (kucni_broj.csv), ` +
     `<strong>јавне објекте</strong> (objekti.csv) и <strong>бираче по адреси</strong>. ` +
     `Сваки јавни објекат је просторно спојен са најближом адресом на којој постоје уписани бирачи ` +
-    `(у радијусу до ${s.max_radius} m). Рачунају се само бирачи уписани на <strong>голу адресу зграде</strong> ` +
+    `(у радијусу до ${s.max_radius} m, јединствена прецизност). Рачунају се само бирачи уписани на <strong>голу адресу зграде</strong> ` +
     `(без броја стана), пошто objekti.csv не садржи број стана — станари са бројем стана се не рачунају. ` +
     `Приказано је <strong>${nf.format(s.poklapanja)}</strong> ` +
     `поклапања из ${nf.format(s.lokaliteta_sa_biracima)} обрађена локалитета.`;
@@ -129,7 +128,6 @@ function renderCards(s) {
     { cls: "blue", num: nf.format(s.biraca_ukupno), lbl: "бирача укупно на тим адресама" },
     { cls: "red", num: nf.format(nes.objekata), lbl: `нестамбених објеката (${nf.format(nes.biraca)} бирача)` },
     { cls: "amber", num: nf.format(sta.objekata), lbl: `стамбено-могућих (домови, манастири…) — ${nf.format(sta.biraca)} бирача` },
-    { cls: "", num: nf.format(s.visoka_pouzdanost), lbl: `поклапања високе поузданости (≤${s.high_conf_radius} m)` },
     { cls: "", num: (s.geokodirano_rate != null ? s.geokodirano_rate + "%" : "—"), lbl: `адреса бирача геокодирано (${nf.format(s.geokodirano || 0)} од ${nf.format(s.adresa_sa_biracima || 0)})` },
   ];
   document.getElementById("cards").innerHTML = cards.map((c) =>
@@ -165,7 +163,8 @@ function renderBreakdown(id, list, key) {
 function renderCaveats(s) {
   const items = [
     `<strong>Само гола адреса зграде — станари се не рачунају.</strong> Бирачки списак некада уз број зграде носи и број стана; objekti.csv нема број стана. Бирачи са бројем стана су станари и <em>не</em> улазе у поклапање — рачунају се само бирачи уписани на голу адресу (без стана). Тако вртић у згради са становима не постаје поклапање због станара.${s.preskoceno_stan != null ? ` Изостављено ${nf.format(s.preskoceno_stan)} редова са бројем стана.` : ""}`,
-    `<strong>Просторно поклапање, не идентитет.</strong> Поклапање значи да се адреса са уписаним бирачима налази у радијусу до ${s.max_radius} m од објекта — растојање је дато по реду. ${nf.format(s.visoka_pouzdanost)} поклапања је на ≤${s.high_conf_radius} m (готово сигурно иста парцела/адреса).`,
+    `<strong>Просторно поклапање, не идентитет.</strong> Поклапање значи да се адреса са уписаним бирачима налази у радијусу до ${s.max_radius} m од објекта — растојање је дато по реду. Радијус од ${s.max_radius} m практично значи исту парцелу/адресу.`,
+    `<strong>Одбачени лажни позитиви (други кућни број).</strong> Кад objekti.csv има сопствену адресу на ИСТОЈ улици као најближа уписана зграда, али са ДРУГИМ кућним бројем (нпр. објекат на бр. 41, најближи уписани бирачи на бр. 39), спој би везао бираче суседне зграде — такви се изостављају.${s.iskljuceno_broj != null ? ` Изостављено ${nf.format(s.iskljuceno_broj)} поклапања. Разлика само у облику броја („36 А”↔„36А”) се не одбацује.` : ""}`,
     `<strong>Категорија „стамбено-могуће”.</strong> Домови за старе, манастири, ученички/студентски домови и сл. су издвојени јер у њима људи легитимно бораве и гласају — нису знак неправилности.`,
     `<strong>objekti.csv није исцрпан.</strong> Садржи само део јавних објеката; одсуство објекта не значи да га нема.`,
     `<strong>Делимична покривеност бирача — прикупљање у току.</strong> Обрађено је ${nf.format(s.lokaliteta_sa_biracima)} локалитета са ${nf.format(s.adresa_sa_biracima || 0)} адреса (без станова).${s.ocekivano_adresa ? ` Када се заврши прикупљање бирачких података (засебан процес), очекује се укупно <strong>${nf.format(s.ocekivano_adresa)}</strong> адреса — тренутно је покривено ~${Math.round(100 * (s.adresa_sa_biracima || 0) / s.ocekivano_adresa)}%.` : ""} Објекти у још необрађеним општинама не могу бити спојени, па ће број поклапања расти како прикупљање одмиче.`,
@@ -185,18 +184,14 @@ function initMap() {
   populate();
 
   document.getElementById("fltNestambeno").addEventListener("change", populate);
-  document.getElementById("fltHighConf").addEventListener("change", populate);
 }
 
 function populate() {
   const onlyNes = document.getElementById("fltNestambeno").checked;
-  const onlyHC = document.getElementById("fltHighConf").checked;
-  const hcR = DATA.summary.high_conf_radius;
   cluster.clearLayers();
   const markers = [];
   for (const m of DATA.matches) {
     if (onlyNes && m.kategorija !== "nestambeno") continue;
-    if (onlyHC && m.rastojanje_m > hcR) continue;
     const color = COLORS[m.kategorija] || COLORS.nepoznato;
     const radius = Math.min(14, 4 + Math.sqrt(m.ukupno));
     const mk = L.circleMarker([m.lat, m.lon], {

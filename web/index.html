@@ -9,7 +9,14 @@
 </head>
 <body>
   <header>
-    <h1>Бирачи по адреси</h1>
+    <div id="intro" class="intro">
+        <h1>Број бирача по адреси</h1>
+        <p>Овде можете на олакшани начин прегледати број пријављених бирача по адреси по целој Србији.</p>
+        <p>
+          Покривеност података је тренутно <span id="coverage_percent">%</span>, а у току је допуна преосталих података.
+          На податке се не треба ослањати као да су 100% тачни, јер не представљају тачан преглед у реалном времену, већ у време када су били прикупљени.
+        </p>
+    </div>
     <div id="coverage" class="coverage">Учитавање…</div>
   </header>
 
@@ -29,6 +36,7 @@
 
       <div id="tableView" hidden>
         <div class="table-header">
+          <button type="button" id="backToList" class="back-btn">← Локалитети</button>
           <h2 id="localityTitle"></h2>
           <div id="localityMeta" class="meta"></div>
         </div>

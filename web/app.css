@@ -32,8 +32,12 @@ header {
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
 }
+/* On large screens, split the header into three equal columns. */
+header > * { flex: 1 1 0; min-width: 0; }
 header h1 { font-size: 18px; margin: 0; }
-.coverage { color: var(--muted); font-size: 13px; }
+.intro p { color: var(--muted); font-size: 11px; }
+#coverage_percent { font-weight: bold; }
+.coverage { color: var(--muted); font-size: 11px; }
 
 main { flex: 1 1 auto; display: flex; min-height: 0; }
 
@@ -99,6 +103,22 @@ main { flex: 1 1 auto; display: flex; min-height: 0; }
 
 #tableView { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
 .table-header h2 { margin: 0 0 2px; font-size: 17px; }
+/* Back-to-list control: desktop keeps the side-by-side picker, so hide it. */
+.back-btn {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.back-btn:hover { background: var(--accent-soft); }
 .meta { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
 
 .filters { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
@@ -160,6 +180,7 @@ tbody tr.hl-row td { background: #fde68a !important; box-shadow: inset 0 0 0 1px
     gap: 4px 12px;
     padding: 10px 14px;
   }
+  header > * { flex: 1 1 100%; }
 
   #sidebar {
     flex: 0 0 auto;
@@ -168,6 +189,16 @@ tbody tr.hl-row td { background: #fde68a !important; box-shadow: inset 0 0 0 1px
     border-right: none;
     border-bottom: 1px solid var(--border);
   }
+
+  /* Master–detail on mobile: once a locality is picked, hide the picker
+     entirely and give the whole viewport to the address table. The back
+     button returns to the list. */
+  body.has-selection #sidebar { display: none; }
+  body.has-selection .back-btn { display: inline-flex; }
+
+  /* Hide the intro blurb (keep the title) once browsing a locality
+     to free vertical space. */
+  body.has-selection #intro p { display: none; }
 
   #content { padding: 12px; }
 

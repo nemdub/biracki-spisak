@@ -4,6 +4,10 @@ const ASSET_V = "20260607d"; // подигни верзију кад се под
 const DATA_BASE = "../data";
 const CSV_DIR = DATA_BASE + "/processed/biraci_po_adresi";
 
+// Очекивани укупан број адреса (без станова) након комплетног прикупљања —
+// именилац за процену покривености података.
+const EXPECTED_TOTAL_ADDRESSES = 1374393;
+
 const COLUMNS = [
   { key: "Mesto", label: "Место", type: "text" },
   { key: "Ulica", label: "Улица", type: "text" },
@@ -133,8 +137,16 @@ function updateCoverage() {
     rows += p.rows || 0; stan += p.stan || 0; preb += p.preb || 0; borav += p.borav || 0;
   }
   const pct = rows ? (stan / rows * 100) : 0;
-  document.getElementById("coverage").textContent =
-    `Обрађено: ${state.processed.size} / ${state.localities.length} локалитета · Са станом: ${pct.toFixed(1)}% · Σ пребивалиште ${preb.toLocaleString("sr")} · Σ боравиште ${borav.toLocaleString("sr")}`;
+  const coveragePct = rows / EXPECTED_TOTAL_ADDRESSES * 100;
+  const lines = [
+    `Обрађено: ${state.processed.size} / ${state.localities.length} локалитета`,
+    `Адреса са бројем стана: ${pct.toFixed(1)}%`,
+    `Бирача по пребивалишту ${preb.toLocaleString("sr")}`,
+    `Бирача по боравишту ${borav.toLocaleString("sr")}`,
+  ];
+  document.getElementById("coverage").innerHTML =
+    lines.map(l => `<div>${l}</div>`).join("");
+  document.getElementById("coverage_percent").textContent = coveragePct.toFixed(1) + "%";
 }
 
 // ---------- Locality picker ----------
@@ -166,12 +178,25 @@ function renderLocalityList() {
   ul.appendChild(frag);
 }
 
+// Врати се на листу локалитета (повратно дугме на малим екранима).
+function deselectLocality() {
+  state.selectedId = null;
+  state.target = null;
+  document.body.classList.remove("has-selection");
+  document.getElementById("tableView").hidden = true;
+  document.getElementById("loading").hidden = true;
+  document.getElementById("placeholder").hidden = false;
+  renderLocalityList();
+}
+
 // ---------- Load a locality ----------
 async function selectLocality(loc) {
   if (loc.id === state.selectedId) return;
   state.selectedId = loc.id;
   state.sort = { key: null, dir: 1 };
   state.highlightIndex = -1;
+  // Сигнал за CSS: на малим екранима скупи бирач локалитета да табела добије простор.
+  document.body.classList.add("has-selection");
   renderLocalityList();
 
   document.getElementById("placeholder").hidden = true;
@@ -209,7 +234,7 @@ function setupTable(loc) {
   const dateStr = maxTs ? new Date(maxTs * 1000).toLocaleDateString("sr") : "—";
   const stanPct = state.allRows.length ? (withStan / state.allRows.length * 100) : 0;
   document.getElementById("localityMeta").textContent =
-    `Општина: ${opstina} · ID: ${loc.id} · Адреса: ${state.allRows.length.toLocaleString("sr")} · Са станом: ${stanPct.toFixed(1)}% · Ажурирано: ${dateStr}`;
+    `Општина: ${opstina} · ID: ${loc.id} · Адреса: ${state.allRows.length.toLocaleString("sr")} · Адреса са бројм стана: ${stanPct.toFixed(1)}% · Ажурирано: ${dateStr}`;
 
   const headRow = document.getElementById("headRow");
   headRow.innerHTML = "";
@@ -332,5 +357,6 @@ document.getElementById("onlyProcessed").addEventListener("change", renderLocali
 document.getElementById("filterMesto").addEventListener("input", () => { state.highlightIndex = -1; applyFilterSort(); });
 document.getElementById("filterUlica").addEventListener("input", () => { state.highlightIndex = -1; applyFilterSort(); });
 document.getElementById("scroller").addEventListener("scroll", renderWindow);
+document.getElementById("backToList").addEventListener("click", deselectLocality);
 
 init();

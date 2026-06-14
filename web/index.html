@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="robots" content="noindex, nofollow">
   <title>Бирачи по адреси — преглед</title>
-  <link rel="stylesheet" href="app.css?v=20260607d">
+  <link rel="stylesheet" href="app.css?v=20260614a">
 </head>
 <body>
   <header>
@@ -17,7 +17,10 @@
           На податке се не треба ослањати као да су 100% тачни, јер не представљају тачан преглед у реалном времену, већ у време када су били прикупљени.
         </p>
     </div>
-    <div id="coverage" class="coverage">Учитавање…</div>
+    <div class="data">
+      <div id="coverage" class="coverage">Учитавање…</div>
+      <a id="downloadAll" class="download-link" href="../data/exports/biraci_po_adresi_sve.csv.zip" download>⬇ Преузми све податке (CSV, ZIP)</a>
+    </div>
   </header>
 
   <main>
@@ -39,6 +42,7 @@
           <button type="button" id="backToList" class="back-btn">← Локалитети</button>
           <h2 id="localityTitle"></h2>
           <div id="localityMeta" class="meta"></div>
+          <a id="downloadLocality" class="download-link" download>⬇ Преузми CSV овог локалитета</a>
         </div>
 
         <div class="filters">
@@ -61,6 +65,6 @@
     </section>
   </main>
 
-  <script src="app.js?v=20260607d"></script>
+  <script src="app.js?v=20260614a"></script>
 </body>
 </html>

@@ -37,7 +37,7 @@ header > * { flex: 1 1 0; min-width: 0; }
 header h1 { font-size: 18px; margin: 0; }
 .intro p { color: var(--muted); font-size: 11px; }
 #coverage_percent { font-weight: bold; }
-.coverage { color: var(--muted); font-size: 11px; }
+.coverage { color: var(--muted); font-size: 11px; margin-bottom: 12px; }
 
 main { flex: 1 1 auto; display: flex; min-height: 0; }
 
@@ -120,6 +120,25 @@ main { flex: 1 1 auto; display: flex; min-height: 0; }
 }
 .back-btn:hover { background: var(--accent-soft); }
 .meta { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+
+/* Download links: subtle button styling, reused in the intro and table header. */
+.download-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+.download-link:hover { background: var(--accent-soft); }
+.downloads { margin: 6px 0 0; }
+.intro .download-link { font-size: 11px; padding: 4px 8px; }
+.table-header .download-link { font-size: 13px; margin-bottom: 12px; }
 
 .filters { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .filters input[type="search"] {

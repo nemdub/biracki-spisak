@@ -5,3 +5,5 @@ __pycache__
 .claude
 .ai/mcp
 data/liste_nekretnina
+
+data/exports

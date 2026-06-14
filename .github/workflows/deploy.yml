@@ -60,6 +60,13 @@ jobs:
           printf '/    /web/    301\n' > dist/_redirects
           printf 'User-agent: *\nDisallow: /\n' > dist/robots.txt
 
+      # Assembles the downloadable CSV bundles into dist/data/exports/:
+      # one zipped CSV of all served localities + an exports.json manifest the
+      # viewer reads to show the bundle size. Per-locality CSVs are already
+      # served from dist/data/processed/, so they need no extra step.
+      - name: Build CSV export bundles
+        run: bash generate_exports.sh dist/data/exports
+
       - name: Deploy to Netlify
         run: >
           npx --yes netlify-cli@17 deploy

@@ -1,6 +1,6 @@
 "use strict";
 
-const ASSET_V = "20260607d"; // подигни верзију кад се подаци/код промене (руши кеш)
+const ASSET_V = "20260614a"; // подигни верзију кад се подаци/код промене (руши кеш)
 const DATA_BASE = "../data";
 const CSV_DIR = DATA_BASE + "/processed/biraci_po_adresi";
 
@@ -94,10 +94,27 @@ async function init() {
     for (const p of proc) state.processed.set(p.id, p);
     updateCoverage();
     renderLocalityList();
+    setupDownloadAll();
     await handleDeepLink();
   } catch (e) {
     document.getElementById("coverage").textContent = "Грешка при учитавању: " + e.message;
   }
+}
+
+// Линк „Преузми све податке" већ показује на zip припремљен током билда; овде
+// само допишемо величину фајла из exports.json ако је манифест доступан.
+async function setupDownloadAll() {
+  const a = document.getElementById("downloadAll");
+  if (!a) return;
+  try {
+    const m = await fetch(DATA_BASE + "/exports/exports.json?v=" + ASSET_V)
+      .then(r => (r.ok ? r.json() : null));
+    if (m && m.all) {
+      a.href = DATA_BASE + "/exports/" + m.all.file;
+      const mb = m.all.bytes / 1048576;
+      a.textContent = `⬇ Преузми све податке (CSV, ZIP, ${mb.toFixed(1)} MB)`;
+    }
+  } catch (e) { /* нема манифеста (нпр. локално) — задржи подразумевани линк */ }
 }
 
 // Дубоки линк из извештаја: ?loc=<ид>&mesto=&ulica=&broj= → отвори локалитет,
@@ -235,6 +252,12 @@ function setupTable(loc) {
   const stanPct = state.allRows.length ? (withStan / state.allRows.length * 100) : 0;
   document.getElementById("localityMeta").textContent =
     `Општина: ${opstina} · ID: ${loc.id} · Адреса: ${state.allRows.length.toLocaleString("sr")} · Адреса са бројем стана: ${stanPct.toFixed(1)}% · Ажурирано: ${dateStr}`;
+
+  // Преузимање CSV-а локалитета показује директно на статички фајл (припремљен
+  // унапред), а download атрибут даје читљиво име фајла.
+  const dl = document.getElementById("downloadLocality");
+  dl.href = `${CSV_DIR}/biraci_po_adresi_${loc.id}.csv?v=${ASSET_V}`;
+  dl.setAttribute("download", `biraci_po_adresi_${loc.name}.csv`);
 
   const headRow = document.getElementById("headRow");
   headRow.innerHTML = "";

@@ -1,6 +1,6 @@
 "use strict";
 
-const ASSET_V = "20260614a"; // подигни верзију кад се подаци/код промене (руши кеш)
+const ASSET_V = "20260614b"; // подигни верзију кад се подаци/код промене (руши кеш)
 const DATA_BASE = "../data";
 const CSV_DIR = DATA_BASE + "/processed/biraci_po_adresi";
 
@@ -149,12 +149,15 @@ function scrollToTarget() {
 }
 
 function updateCoverage() {
-  let rows = 0, stan = 0, preb = 0, borav = 0;
+  let rows = 0, stan = 0, houses = 0, preb = 0, borav = 0;
   for (const p of state.processed.values()) {
-    rows += p.rows || 0; stan += p.stan || 0; preb += p.preb || 0; borav += p.borav || 0;
+    rows += p.rows || 0; stan += p.stan || 0; houses += p.houses || 0;
+    preb += p.preb || 0; borav += p.borav || 0;
   }
   const pct = rows ? (stan / rows * 100) : 0;
-  const coveragePct = rows / EXPECTED_TOTAL_ADDRESSES * 100;
+  // Именилац (EXPECTED_TOTAL_ADDRESSES) броји кућне бројеве без станова, па и
+  // бројилац мора да броји јединствене кућне бројеве, а не сваки ред (стан).
+  const coveragePct = houses / EXPECTED_TOTAL_ADDRESSES * 100;
   const lines = [
     `Обрађено: ${state.processed.size} / ${state.localities.length} локалитета`,
     `Адреса са бројем стана: ${pct.toFixed(1)}%`,
